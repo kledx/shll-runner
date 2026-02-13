@@ -1,0 +1,27 @@
+{
+  "name": "sample-pack",
+  "version": "1.0.0",
+  "strategies": [
+    {
+      "tokenId": "2",
+      "strategyType": "wrap_native",
+      "target": "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd",
+      "value": "1000000000000000",
+      "minIntervalMs": 120000,
+      "requirePositiveBalance": true,
+      "maxFailures": 7,
+      "enabled": true
+    },
+    {
+      "tokenId": "3",
+      "strategyType": "fixed_action",
+      "target": "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd",
+      "data": "0xd0e30db0",
+      "value": "1000000000000000",
+      "minIntervalMs": 180000,
+      "requirePositiveBalance": true,
+      "maxFailures": 5,
+      "enabled": true
+    }
+  ]
+}

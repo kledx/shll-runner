@@ -15,7 +15,7 @@ COPY --from=builder /app/package.json ./
 
 ENV NODE_ENV=production
 
-# Health check — verify the process is running
+# Health check — verify the process is runningapi/listings
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD node -e "process.exit(0)"
 

@@ -1,0 +1,249 @@
+import {
+    createPublicClient,
+    createWalletClient,
+    http,
+    type Address,
+    type Hex,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { AgentNFAAbi } from "./abi.js";
+import type {
+    ActionPayload,
+    ActionResult,
+    EnableResult,
+    NormalizedPermit,
+    Observation,
+} from "./types.js";
+
+export interface ChainServices {
+    account: { address: Address };
+    observe: (tokenId: bigint) => Promise<Observation>;
+    readStatus: (tokenId: bigint) => Promise<{
+        onchainOperator: Address;
+        operatorExpires: bigint;
+        renter: Address;
+        renterExpires: bigint;
+        operatorNonce: bigint;
+    }>;
+    enableOperatorWithPermit: (
+        permit: NormalizedPermit,
+        sig: Hex,
+        waitForReceipt: boolean
+    ) => Promise<EnableResult>;
+    clearOperator: (tokenId: bigint, waitForReceipt: boolean) => Promise<EnableResult>;
+    executeAction: (tokenId: bigint, action: ActionPayload) => Promise<ActionResult>;
+}
+
+interface ChainConfig {
+    rpcUrl: string;
+    operatorPrivateKey: `0x${string}`;
+    agentNfaAddress: `0x${string}`;
+}
+
+export function createChainServices(config: ChainConfig): ChainServices {
+    const account = privateKeyToAccount(config.operatorPrivateKey);
+
+    const publicClient = createPublicClient({
+        transport: http(config.rpcUrl),
+    });
+
+    const walletClient = createWalletClient({
+        transport: http(config.rpcUrl),
+        account,
+    });
+
+    async function observe(tokenId: bigint): Promise<Observation> {
+        const [agentState, agentAccount, renter, renterExpires, operator, operatorExpires, block] =
+            await Promise.all([
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "getState",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "accountOf",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "userOf",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "userExpires",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "operatorOf",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "operatorExpiresOf",
+                    args: [tokenId],
+                }),
+                publicClient.getBlock(),
+            ]);
+
+        return {
+            tokenId,
+            agentState: agentState as unknown as Observation["agentState"],
+            agentAccount: agentAccount as Address,
+            renter: renter as Address,
+            renterExpires: renterExpires as bigint,
+            operator: operator as Address,
+            operatorExpires: operatorExpires as bigint,
+            blockNumber: block.number,
+            blockTimestamp: block.timestamp,
+            timestamp: Date.now(),
+        };
+    }
+
+    async function readStatus(tokenId: bigint): Promise<{
+        onchainOperator: Address;
+        operatorExpires: bigint;
+        renter: Address;
+        renterExpires: bigint;
+        operatorNonce: bigint;
+    }> {
+        const [onchainOperator, operatorExpires, renter, renterExpires, operatorNonce] =
+            await Promise.all([
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "operatorOf",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "operatorExpiresOf",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "userOf",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "userExpires",
+                    args: [tokenId],
+                }),
+                publicClient.readContract({
+                    address: config.agentNfaAddress,
+                    abi: AgentNFAAbi,
+                    functionName: "operatorNonceOf",
+                    args: [tokenId],
+                }),
+            ]);
+
+        return {
+            onchainOperator: onchainOperator as Address,
+            operatorExpires: operatorExpires as bigint,
+            renter: renter as Address,
+            renterExpires: renterExpires as bigint,
+            operatorNonce: operatorNonce as bigint,
+        };
+    }
+
+    async function enableOperatorWithPermit(
+        permit: NormalizedPermit,
+        sig: Hex,
+        waitForReceipt: boolean
+    ): Promise<EnableResult> {
+        const simulation = await publicClient.simulateContract({
+            address: config.agentNfaAddress,
+            abi: AgentNFAAbi,
+            functionName: "setOperatorWithSig",
+            args: [
+                {
+                    tokenId: permit.tokenId,
+                    renter: permit.renter,
+                    operator: permit.operator,
+                    expires: permit.expires,
+                    nonce: permit.nonce,
+                    deadline: permit.deadline,
+                },
+                sig,
+            ],
+            account,
+        });
+
+        const hash = await walletClient.writeContract(simulation.request);
+        if (!waitForReceipt) return { hash };
+
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        return {
+            hash,
+            receiptStatus: receipt.status,
+            receiptBlock: receipt.blockNumber.toString(),
+        };
+    }
+
+    async function clearOperator(
+        tokenId: bigint,
+        waitForReceipt: boolean
+    ): Promise<EnableResult> {
+        const simulation = await publicClient.simulateContract({
+            address: config.agentNfaAddress,
+            abi: AgentNFAAbi,
+            functionName: "clearOperator",
+            args: [tokenId],
+            account,
+        });
+
+        const hash = await walletClient.writeContract(simulation.request);
+        if (!waitForReceipt) return { hash };
+
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        return {
+            hash,
+            receiptStatus: receipt.status,
+            receiptBlock: receipt.blockNumber.toString(),
+        };
+    }
+
+    async function executeAction(
+        tokenId: bigint,
+        action: ActionPayload
+    ): Promise<ActionResult> {
+        const simulation = await publicClient.simulateContract({
+            address: config.agentNfaAddress,
+            abi: AgentNFAAbi,
+            functionName: "execute",
+            args: [tokenId, action],
+            account,
+        });
+
+        const hash = await walletClient.writeContract(simulation.request);
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+
+        return {
+            hash,
+            receiptStatus: receipt.status,
+            receiptBlock: receipt.blockNumber.toString(),
+        };
+    }
+
+    return {
+        account,
+        observe,
+        readStatus,
+        enableOperatorWithPermit,
+        clearOperator,
+        executeAction,
+    };
+}
+
