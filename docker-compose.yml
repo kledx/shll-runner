@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  agent-runner:
+    build: .
+    container_name: shll-agent-runner
+    restart: unless-stopped
+    environment:
+      - RPC_URL=${RPC_URL}
+      - CHAIN_ID=${CHAIN_ID:-97}
+      - OPERATOR_PK=${OPERATOR_PK}
+      - AGENT_NFA_ADDRESS=${AGENT_NFA_ADDRESS}
+      - POLICY_GUARD_ADDRESS=${POLICY_GUARD_ADDRESS}
+      - TOKEN_ID=${TOKEN_ID}
+      - POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-30000}
+      - MAX_RETRIES=${MAX_RETRIES:-3}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
