@@ -49,3 +49,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
