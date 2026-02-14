@@ -36,19 +36,25 @@ export interface ChainServices {
 
 interface ChainConfig {
     rpcUrl: string;
+    rpcTimeoutMs: number;
+    rpcRetryCount: number;
     operatorPrivateKey: `0x${string}`;
     agentNfaAddress: `0x${string}`;
 }
 
 export function createChainServices(config: ChainConfig): ChainServices {
     const account = privateKeyToAccount(config.operatorPrivateKey);
+    const transport = http(config.rpcUrl, {
+        timeout: config.rpcTimeoutMs,
+        retryCount: config.rpcRetryCount,
+    });
 
     const publicClient = createPublicClient({
-        transport: http(config.rpcUrl),
+        transport,
     });
 
     const walletClient = createWalletClient({
-        transport: http(config.rpcUrl),
+        transport,
         account,
     });
 
@@ -246,4 +252,3 @@ export function createChainServices(config: ChainConfig): ChainServices {
         executeAction,
     };
 }
-

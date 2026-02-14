@@ -46,6 +46,8 @@ const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 const log = createLogger(config.logLevel);
 const chain = createChainServices({
     rpcUrl: config.rpcUrl,
+    rpcTimeoutMs: config.rpcTimeoutMs,
+    rpcRetryCount: config.rpcRetryCount,
     operatorPrivateKey: config.operatorPrivateKey,
     agentNfaAddress: config.agentNfaAddress,
 });

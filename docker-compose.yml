@@ -8,6 +8,8 @@ services:
     restart: unless-stopped
     environment:
       - RPC_URL=${RPC_URL}
+      - RPC_TIMEOUT_MS=${RPC_TIMEOUT_MS:-30000}
+      - RPC_RETRY_COUNT=${RPC_RETRY_COUNT:-3}
       - CHAIN_ID=${CHAIN_ID:-97}
       - OPERATOR_PK=${OPERATOR_PK}
       - AGENT_NFA_ADDRESS=${AGENT_NFA_ADDRESS}

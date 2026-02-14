@@ -44,6 +44,8 @@ function optionalBigIntList(key: string): bigint[] {
 export const config = {
     // Chain
     rpcUrl: requiredAny(["RPC_URL", "RPC_HTTP"]),
+    rpcTimeoutMs: optionalInt("RPC_TIMEOUT_MS", 30_000),
+    rpcRetryCount: optionalInt("RPC_RETRY_COUNT", 3),
     chainId: parseInt(optionalAny(["CHAIN_ID"], "97"), 10),
 
     // Operator wallet
