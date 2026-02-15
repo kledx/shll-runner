@@ -1,6 +1,7 @@
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 import type {
     ActionPayload,
+    CompositeChildStrategy,
     MarketSignalRecord,
     Observation,
     StrategyConfigRecord,
@@ -140,6 +141,62 @@ const handlers: Record<StrategyType, StrategyHandler> = {
                 value: BigInt(strategy.value),
                 data: strategy.data,
             },
+        };
+    },
+    composite: (strategy, obs, context) => {
+        const params = strategy.strategyParams ?? {};
+        const mode: string = (params.mode as string) ?? "first_match";
+        const children = params.children;
+        if (!Array.isArray(children) || children.length === 0) {
+            return { reason: "composite requires strategyParams.children array" };
+        }
+
+        const MAX_CHILDREN = 10;
+        const safeChildren = children.slice(0, MAX_CHILDREN) as CompositeChildStrategy[];
+        const results: { index: number; resolution: StrategyResolution }[] = [];
+
+        for (let i = 0; i < safeChildren.length; i++) {
+            const child = safeChildren[i];
+            if (!child.strategyType || child.strategyType === "composite" as StrategyType) {
+                continue; // prevent nesting composite inside composite
+            }
+            const childHandler = handlers[child.strategyType];
+            if (!childHandler) continue;
+
+            // Build a synthetic StrategyConfigRecord from the child definition
+            const childRecord: StrategyConfigRecord = {
+                ...strategy,
+                strategyType: child.strategyType,
+                target: child.target || strategy.target,
+                data: (child.data || strategy.data) as Hex,
+                value: child.value ?? strategy.value,
+                strategyParams: child.strategyParams ?? {},
+            };
+
+            const resolution = childHandler(childRecord, obs, context);
+            if (resolution.action) {
+                if (mode === "first_match") {
+                    return {
+                        reason: `composite[${i}/${child.strategyType}]: ${resolution.reason}`,
+                        action: resolution.action,
+                    };
+                }
+                results.push({ index: i, resolution });
+            }
+        }
+
+        // priority mode: return highest-priority (lowest index) match
+        if (mode === "priority" && results.length > 0) {
+            const best = results[0];
+            const child = safeChildren[best.index];
+            return {
+                reason: `composite[${best.index}/${child.strategyType}] (priority): ${best.resolution.reason}`,
+                action: best.resolution.action,
+            };
+        }
+
+        return {
+            reason: `composite: no child matched (${safeChildren.length} children, mode=${mode})`,
         };
     },
 };

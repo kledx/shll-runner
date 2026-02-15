@@ -40,6 +40,7 @@ import type {
 import { listSupportedStrategies, resolveStrategyAction } from "./strategyRegistry.js";
 import { loadCapabilityPackFromFile, parseCapabilityPack } from "./capabilityPack.js";
 import { sha256Hex, verifyPackSignature } from "./packSecurity.js";
+import { formatByorSchemaResponse, validateByorSubmission, checkByorSandbox } from "./byor.js";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 
@@ -620,12 +621,12 @@ async function syncMarketSignalsFromSourceOnce(options?: {
             : typeof body === "object" &&
                 body != null &&
                 Array.isArray((body as { items?: unknown[] }).items)
-              ? ((body as { items: unknown[] }).items as unknown[])
-              : typeof body === "object" &&
-                  body != null &&
-                  Array.isArray((body as { data?: unknown[] }).data)
-                ? ((body as { data: unknown[] }).data as unknown[])
-                : null;
+                ? ((body as { items: unknown[] }).items as unknown[])
+                : typeof body === "object" &&
+                    body != null &&
+                    Array.isArray((body as { data?: unknown[] }).data)
+                    ? ((body as { data: unknown[] }).data as unknown[])
+                    : null;
         if (!rawItems) {
             throw new Error(
                 "market signal source response must be an array or { items: [] } or { data: [] }"
@@ -1141,6 +1142,100 @@ function startApiServer(): void {
                         lastError: lastMarketSignalSyncError,
                     },
                 });
+                return;
+            }
+
+            if (req.method === "GET" && url.pathname === "/byor/schema") {
+                const schema = formatByorSchemaResponse({
+                    chainId: config.chainId,
+                    agentNfaAddress: config.agentNfaAddress,
+                    runnerOperator: chain.account.address,
+                });
+                writeJson(res, 200, { ok: true, schema });
+                return;
+            }
+
+            if (req.method === "POST" && url.pathname === "/byor/submit") {
+                if (!requireApiKey(req)) {
+                    writeJson(res, 401, { error: "unauthorized" });
+                    return;
+                }
+
+                const body = await parseBody(req);
+                const validation = validateByorSubmission(body);
+                if (!validation.valid || !validation.action) {
+                    writeJson(res, 400, { error: validation.reason ?? "invalid submission" });
+                    return;
+                }
+
+                const tokenId = BigInt((body as Record<string, unknown>).tokenId as string | number);
+                if (!isTokenAllowed(tokenId)) {
+                    writeJson(res, 400, {
+                        error: `tokenId not allowed by runner: ${tokenId.toString()}`,
+                        allowedTokenIds: [...allowedTokenIdSet],
+                    });
+                    return;
+                }
+
+                const strategy = await store.getStrategy(tokenId);
+                const sandbox = checkByorSandbox(strategy, validation.action);
+                if (!sandbox.ok) {
+                    writeJson(res, 403, {
+                        error: sandbox.reason ?? "blocked by strategy sandbox",
+                    });
+                    return;
+                }
+
+                const dryRun = !!(body as Record<string, unknown>).dryRun;
+                if (dryRun) {
+                    writeJson(res, 200, {
+                        ok: true,
+                        dryRun: true,
+                        tokenId: tokenId.toString(),
+                        action: {
+                            target: validation.action.target,
+                            value: validation.action.value.toString(),
+                            data: validation.action.data,
+                        },
+                        sandboxOk: true,
+                    });
+                    return;
+                }
+
+                // Execute via on-chain
+                const hash = actionHash(
+                    validation.action.target,
+                    validation.action.value,
+                    validation.action.data
+                );
+                try {
+                    const result = await chain.executeAction(tokenId, validation.action);
+                    await store.recordRun({
+                        tokenId: tokenId.toString(),
+                        actionType: "byor",
+                        actionHash: hash,
+                        simulateOk: true,
+                        txHash: result.hash,
+                    });
+                    log.info(`[BYOR][${tokenId.toString()}] executed TX ${result.hash}`);
+                    writeJson(res, 200, {
+                        ok: true,
+                        tokenId: tokenId.toString(),
+                        txHash: result.hash,
+                        receiptStatus: result.receiptStatus,
+                        receiptBlock: result.receiptBlock,
+                    });
+                } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    await store.recordRun({
+                        tokenId: tokenId.toString(),
+                        actionType: "byor",
+                        actionHash: hash,
+                        simulateOk: false,
+                        error: message,
+                    });
+                    writeJson(res, 500, { error: `execution failed: ${message}` });
+                }
                 return;
             }
 

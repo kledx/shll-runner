@@ -1,6 +1,18 @@
 import type { Address, Hex } from "viem";
 
-export type StrategyType = "fixed_action" | "wrap_native" | "hotpump_watchlist";
+export type StrategyType = "fixed_action" | "wrap_native" | "hotpump_watchlist" | "composite";
+
+/**
+ * Child strategy definition used inside a composite strategy's strategyParams.children.
+ * Each child carries its own strategyType, target, data, value, and params.
+ */
+export interface CompositeChildStrategy {
+    strategyType: Exclude<StrategyType, "composite">;
+    target: string;
+    data: string;
+    value: string;
+    strategyParams: Record<string, unknown>;
+}
 
 export interface AgentState {
     balance: bigint;
