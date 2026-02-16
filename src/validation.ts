@@ -45,7 +45,16 @@ const statusQuerySchema = z.object({
 
 const strategyUpsertSchema = z.object({
     tokenId: bigintLike,
-    strategyType: z.enum(["fixed_action", "wrap_native", "hotpump_watchlist"]).optional(),
+    strategyType: z
+        .enum([
+            "fixed_action",
+            "wrap_native",
+            "hotpump_watchlist",
+            "composite",
+            "llm_trader",
+            "manual_swap",
+        ])
+        .optional(),
     target: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
     data: z.string().regex(/^0x[0-9a-fA-F]*$/).optional(),
     value: bigintLike.optional(),
@@ -63,6 +72,7 @@ const strategyQuerySchema = z.object({
 const strategyLoadPackSchema = z.object({
     filePath: z.string().min(1).optional(),
     pack: z.unknown().optional(),
+    tokenIds: z.array(bigintLike).min(1).max(200).optional(),
     hash: z.string().regex(/^(0x)?[0-9a-fA-F]{64}$/).optional(),
     signature: z.string().min(8).optional(),
     publicKey: z.string().min(16).optional(),

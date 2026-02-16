@@ -38,7 +38,12 @@ import type {
     StrategyType,
 } from "./types.js";
 import { listSupportedStrategies, resolveStrategyAction } from "./strategyRegistry.js";
-import { loadCapabilityPackFromFile, parseCapabilityPack } from "./capabilityPack.js";
+import {
+    loadCapabilityPackFromFile,
+    parseCapabilityPack,
+    type CapabilityPack,
+    type ManifestCapabilityPack,
+} from "./capabilityPack.js";
 import { sha256Hex, verifyPackSignature } from "./packSecurity.js";
 import { formatByorSchemaResponse, validateByorSubmission, checkByorSandbox } from "./byor.js";
 
@@ -235,6 +240,121 @@ function normalizeStrategyInput(
         enabled: input.enabled ?? true,
         source,
     };
+}
+
+function toObjectRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return {};
+    }
+    return value as Record<string, unknown>;
+}
+
+function inferManifestStrategyType(pack: ManifestCapabilityPack): StrategyType {
+    const explicit = pack.runner?.strategyType;
+    if (explicit) return explicit;
+
+    const raw = (pack.runner?.strategyId ?? pack.strategyId ?? "").toLowerCase();
+    if (raw.includes("llm")) return "llm_trader";
+    if (raw.includes("base_trader")) return "llm_trader";
+    if (raw.includes("manual")) return "manual_swap";
+    if (raw.includes("hotpump") || raw.includes("watchlist")) return "hotpump_watchlist";
+    if (raw.includes("wrap")) return "wrap_native";
+    if (raw.includes("composite")) return "composite";
+    return "llm_trader";
+}
+
+function pickManifestContracts(
+    pack: ManifestCapabilityPack
+): Record<string, string> {
+    const networks = pack.networks ?? [];
+    const exactMatch = networks.find((network) => network.chainId === config.chainId);
+    if (exactMatch?.contracts) return exactMatch.contracts;
+    return networks[0]?.contracts ?? {};
+}
+
+function resolveManifestTokenIds(
+    payloadTokenIds: Array<string | number | bigint> | undefined
+): bigint[] {
+    if (payloadTokenIds && payloadTokenIds.length > 0) {
+        return payloadTokenIds.map((item) => BigInt(item));
+    }
+    if (allowedTokenIdSet.size === 1) {
+        return [BigInt([...allowedTokenIdSet][0])];
+    }
+    throw new Error(
+        "Manifest pack requires tokenIds when runner allows multiple token IDs"
+    );
+}
+
+function normalizeStrategiesFromPack(
+    pack: CapabilityPack,
+    payloadTokenIds: Array<string | number | bigint> | undefined,
+    sourceLabel: string
+): StrategyInputNormalized[] {
+    if (pack.kind === "strategy_pack") {
+        return pack.strategies.map((item) => normalizeStrategyInput(item, sourceLabel));
+    }
+
+    const tokenIds = resolveManifestTokenIds(payloadTokenIds);
+    const strategyType = inferManifestStrategyType(pack);
+    const defaults = toObjectRecord(pack.runner?.defaults);
+    const contracts = pickManifestContracts(pack);
+    const target =
+        typeof defaults.target === "string"
+            ? defaults.target
+            : typeof contracts.Router === "string"
+                ? contracts.Router
+                : ZERO_ADDR;
+    const strategyParams = { ...defaults };
+    delete strategyParams.target;
+    delete strategyParams.data;
+    delete strategyParams.value;
+    delete strategyParams.minIntervalMs;
+    delete strategyParams.requirePositiveBalance;
+    delete strategyParams.maxFailures;
+    delete strategyParams.enabled;
+
+    if (strategyType === "llm_trader" && !("toolAllowList" in strategyParams) && pack.toolAllowList) {
+        strategyParams.toolAllowList = pack.toolAllowList;
+    }
+    if (strategyType === "llm_trader" && !("systemPromptOverride" in strategyParams)) {
+        const prompt = pack.llmProfile?.systemPromptOverride;
+        if (typeof prompt === "string" && prompt.trim()) {
+            strategyParams.systemPromptOverride = prompt;
+        }
+    }
+
+    const minIntervalMs =
+        typeof pack.runner?.tickSec === "number" && pack.runner.tickSec > 0
+            ? pack.runner.tickSec * 1000
+            : parseIntUnknown(defaults.minIntervalMs, config.minActionIntervalMs);
+    const requirePositiveBalance =
+        typeof defaults.requirePositiveBalance === "boolean"
+            ? defaults.requirePositiveBalance
+            : config.requirePositiveBalance;
+    const maxFailures = Math.max(
+        1,
+        parseIntUnknown(defaults.maxFailures, config.strategyMaxFailuresDefault)
+    );
+    const enabled = typeof defaults.enabled === "boolean" ? defaults.enabled : true;
+
+    return tokenIds.map((tokenId) =>
+        normalizeStrategyInput(
+            {
+                tokenId,
+                strategyType,
+                target,
+                data: typeof defaults.data === "string" ? defaults.data : "0x",
+                value: parseBigintUnknown(defaults.value, 0n),
+                strategyParams,
+                minIntervalMs,
+                requirePositiveBalance,
+                maxFailures,
+                enabled,
+            },
+            sourceLabel
+        )
+    );
 }
 
 function isTokenAllowed(tokenId: bigint): boolean {
@@ -841,7 +961,7 @@ function startApiServer(): void {
                 const packSourceLabel = payload.pack
                     ? "pack:inline"
                     : `pack:${filePath as string}`;
-                const computedHash = sha256Hex(pack);
+                const computedHash = sha256Hex(pack.raw);
                 if (payload.hash) {
                     const expectedHash = payload.hash.toLowerCase().replace(/^0x/, "");
                     if (computedHash !== expectedHash) {
@@ -872,7 +992,7 @@ function startApiServer(): void {
                         return;
                     }
                     const verified = verifyPackSignature({
-                        pack,
+                        pack: pack.raw,
                         signature,
                         publicKeyPem: publicKey,
                     });
@@ -887,16 +1007,28 @@ function startApiServer(): void {
                 const dryRun = payload.dryRun ?? false;
                 const applied: string[] = [];
                 const skipped: Array<{ tokenId: string; reason: string }> = [];
+                let normalizedStrategies: StrategyInputNormalized[];
+                try {
+                    normalizedStrategies = normalizeStrategiesFromPack(
+                        pack,
+                        payload.tokenIds,
+                        packSourceLabel
+                    );
+                } catch (err) {
+                    writeJson(res, 400, {
+                        error: err instanceof Error ? err.message : String(err),
+                    });
+                    return;
+                }
 
-                for (const item of pack.strategies) {
-                    if (!isTokenAllowed(item.tokenId)) {
+                for (const normalized of normalizedStrategies) {
+                    if (!isTokenAllowed(normalized.tokenId)) {
                         skipped.push({
-                            tokenId: item.tokenId.toString(),
+                            tokenId: normalized.tokenId.toString(),
                             reason: "token not in allowlist",
                         });
                         continue;
                     }
-                    const normalized = normalizeStrategyInput(item, packSourceLabel);
                     if (!dryRun) {
                         await store.upsertStrategy({
                             tokenId: normalized.tokenId,
@@ -912,15 +1044,17 @@ function startApiServer(): void {
                             enabled: normalized.enabled,
                         });
                     }
-                    applied.push(item.tokenId.toString());
+                    applied.push(normalized.tokenId.toString());
                 }
 
                 writeJson(res, 200, {
                     ok: true,
                     dryRun,
                     filePath,
-                    packName: pack.name,
-                    packVersion: pack.version,
+                    packKind: pack.kind,
+                    packName: pack.name ?? (pack.kind === "manifest_pack" ? pack.id : undefined),
+                    packVersion: pack.version ?? null,
+                    schemaVersion: pack.kind === "manifest_pack" ? (pack.schemaVersion ?? null) : null,
                     packHash: computedHash,
                     appliedCount: applied.length,
                     skippedCount: skipped.length,
@@ -1251,6 +1385,13 @@ function startApiServer(): void {
                 writeJson(res, 400, {
                     error: "invalid request payload",
                     details: err.issues,
+                });
+                return;
+            }
+            if (err instanceof SyntaxError) {
+                writeJson(res, 400, {
+                    error: "invalid JSON body",
+                    detail: err.message,
                 });
                 return;
             }

@@ -7,7 +7,8 @@
         "dev": "tsx watch src/index.ts",
         "build": "tsc",
         "start": "node dist/index.js",
-        "smoke:signal-sync": "powershell -ExecutionPolicy Bypass -File scripts/p3-signal-sync-smoke.ps1"
+        "smoke:signal-sync": "powershell -ExecutionPolicy Bypass -File scripts/p3-signal-sync-smoke.ps1",
+        "smoke:pack-load": "powershell -ExecutionPolicy Bypass -File scripts/p4-pack-load-smoke.ps1"
     },
     "dependencies": {
         "@types/pg": "^8.16.0",

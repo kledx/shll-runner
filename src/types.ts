@@ -188,6 +188,7 @@ export interface StrategyConfigRecord {
 export interface StrategyLoadPackPayload {
     filePath?: string;
     pack?: unknown;
+    tokenIds?: Array<string | number | bigint>;
     hash?: string;
     signature?: string;
     publicKey?: string;

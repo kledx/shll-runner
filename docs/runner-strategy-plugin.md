@@ -20,7 +20,7 @@ The SHLL Runner V1.4.1 supports extensible strategy plugins that determine when 
 ### Via API
 
 ```bash
-curl -X POST http://localhost:8787/strategies \
+curl -X POST http://localhost:8787/strategy/upsert \
   -H "Content-Type: application/json" \
   -H "x-api-key: YOUR_API_KEY" \
   -d '{
@@ -41,12 +41,23 @@ curl -X POST http://localhost:8787/strategies \
 ### Via Capability Pack
 
 ```bash
-curl -X POST http://localhost:8787/strategies/pack \
+curl -X POST http://localhost:8787/strategy/load-pack \
   -H "Content-Type: application/json" \
   -H "x-api-key: YOUR_API_KEY" \
   -d '{
-    "filePath": "./configs/policies/swapSafe_v1.json"
+    "filePath": "./configs/policies/swapSafe_v1.json",
+    "tokenIds": ["13"]
   }'
+```
+
+Notes:
+- `tokenIds` is optional for legacy strategy packs (`strategies[]` with per-token entries).
+- For manifest packs (`schemaVersion` + `runner`), `tokenIds` is required when runner allowlist has multiple token IDs.
+
+Smoke test script:
+
+```bash
+npm run smoke:pack-load
 ```
 
 ## LLM Trader Configuration
