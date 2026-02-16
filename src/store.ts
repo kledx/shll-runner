@@ -87,6 +87,9 @@ function mapRunRow(row: Record<string, unknown>): RunRecord {
         simulateOk: Boolean(row.simulate_ok),
         txHash: row.tx_hash == null ? undefined : String(row.tx_hash),
         error: row.error == null ? undefined : String(row.error),
+        paramsHash: row.params_hash == null ? undefined : String(row.params_hash),
+        strategyExplain: row.strategy_explain == null ? undefined : String(row.strategy_explain),
+        failureCategory: row.failure_category == null ? undefined : String(row.failure_category),
         createdAt: toIso(row.created_at as Date | string),
     };
 }
@@ -294,6 +297,20 @@ export class RunnerStore {
         await this.pool.query(`
             CREATE INDEX IF NOT EXISTS idx_market_signals_chain_sampled
             ON market_signals (chain_id, sampled_at DESC)
+        `);
+
+        // V1.4: add new columns to runs table
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS params_hash TEXT NULL
+        `);
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS strategy_explain TEXT NULL
+        `);
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS failure_category TEXT NULL
         `);
     }
 
@@ -806,9 +823,12 @@ export class RunnerStore {
                 action_hash,
                 simulate_ok,
                 tx_hash,
-                error
+                error,
+                params_hash,
+                strategy_explain,
+                failure_category
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
             RETURNING *
             `,
             [
@@ -819,6 +839,9 @@ export class RunnerStore {
                 input.simulateOk,
                 input.txHash ?? null,
                 input.error ?? null,
+                input.paramsHash ?? null,
+                input.strategyExplain ?? null,
+                input.failureCategory ?? null,
             ]
         );
 

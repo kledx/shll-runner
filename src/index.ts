@@ -51,6 +51,8 @@ const chain = createChainServices({
     rpcRetryCount: config.rpcRetryCount,
     operatorPrivateKey: config.operatorPrivateKey,
     agentNfaAddress: config.agentNfaAddress,
+    instanceConfigAddress: config.instanceConfigAddress,
+    policyGuardV2Address: config.policyGuardV2Address,
 });
 const store = new RunnerStore({
     chainId: config.chainId,
@@ -72,6 +74,10 @@ const allowedTokenIdSet = new Set<string>(
 let lastLoopAt = 0;
 let lastMarketSignalSyncAt = 0;
 let lastMarketSignalSyncError: string | null = null;
+
+// V1.4: Cache instance configs (immutable after bind, only need to read once)
+import type { InstanceConfigData } from "./types.js";
+const instanceConfigCache = new Map<string, InstanceConfigData>();
 
 interface ExecutionProfile {
     source: "strategy" | "global" | "none";
@@ -435,7 +441,7 @@ async function resolveExecutionProfile(
         }
         if (obs) {
             const context = await buildStrategyRuntimeContext(strategy);
-            const resolved = resolveStrategyAction(strategy, obs, context);
+            const resolved = await resolveStrategyAction(strategy, obs, context);
             return {
                 source: "strategy",
                 action: resolved.action,
@@ -1091,7 +1097,7 @@ function startApiServer(): void {
 
                 const context = await buildStrategyRuntimeContext(strategy);
                 const syntheticObs = makeSyntheticObservation(tokenId);
-                const resolved = resolveStrategyAction(strategy, syntheticObs, context);
+                const resolved = await resolveStrategyAction(strategy, syntheticObs, context);
 
                 writeJson(res, 200, {
                     ok: true,
@@ -1308,8 +1314,33 @@ async function runLoop(): Promise<void> {
                     }
                 }
 
+                // V1.4: Resolve cached instance config (shared between try/catch)
+                const tokenKey = tokenId.toString();
+                const cachedConfig = instanceConfigCache.get(tokenKey);
+
+                // V1.4: Capture agentAccount for preValidate in catch block
+                let lastObsAgentAccount: `0x${string}` | undefined;
+                let lastAction: import("./types.js").ActionPayload | undefined;
+
                 try {
                     const obs = await chain.observe(tokenId);
+                    lastObsAgentAccount = obs.agentAccount;
+
+                    // V1.4: Read and cache instance config on first encounter
+                    if (!instanceConfigCache.has(tokenKey)) {
+                        const icfg = await chain.readInstanceConfig(tokenId);
+                        if (icfg) {
+                            instanceConfigCache.set(tokenKey, icfg);
+                            log.info(
+                                `[V1.4][${tokenKey}] instanceConfig loaded: policyId=${icfg.policyId}, slippage=${icfg.slippageBps}bps, riskTier=${icfg.riskTier}`
+                            );
+                        }
+                    }
+                    const resolvedConfig = instanceConfigCache.get(tokenKey);
+                    if (resolvedConfig) {
+                        obs.instanceConfig = resolvedConfig;
+                    }
+
                     const profile = await resolveExecutionProfile(tokenId, strategy, obs);
                     const decision = reason(obs, profile, strategy);
                     log.info(`[Tick][${tokenId.toString()}] ${decision.reason}`);
@@ -1359,6 +1390,7 @@ async function runLoop(): Promise<void> {
                         }
                     }
 
+                    lastAction = decision.action;
                     const hash = actionHash(
                         decision.action.target,
                         decision.action.value,
@@ -1371,6 +1403,7 @@ async function runLoop(): Promise<void> {
                         actionHash: hash,
                         simulateOk: true,
                         txHash: result.hash,
+                        paramsHash: resolvedConfig?.paramsHash ?? cachedConfig?.paramsHash,
                     });
                     await store.recordStrategySuccess(tokenId);
                     if (strategy) {
@@ -1385,12 +1418,38 @@ async function runLoop(): Promise<void> {
                     const failTarget = strategy?.target ?? config.autoActionTarget;
                     const failValue = strategy ? BigInt(strategy.value) : config.autoActionValue;
                     const failData = strategy?.data ?? config.autoActionData;
+
+                    // V1.4 C-1: Pre-validate for error attribution
+                    let failureCategory: string | undefined;
+                    if (lastObsAgentAccount && lastAction) {
+                        try {
+                            const pv = await chain.preValidate(
+                                tokenId,
+                                lastObsAgentAccount,
+                                lastAction
+                            );
+                            if (!pv.ok) {
+                                failureCategory = pv.reason;
+                                log.info(
+                                    `[V1.4][${tokenId.toString()}] preValidate attribution: ${pv.reason}`
+                                );
+                            }
+                        } catch (pvErr) {
+                            log.error(
+                                `[V1.4][${tokenId.toString()}] preValidate call failed:`,
+                                pvErr instanceof Error ? pvErr.message : pvErr
+                            );
+                        }
+                    }
+
                     await store.recordRun({
                         tokenId: tokenId.toString(),
                         actionType: "auto",
                         actionHash: actionHash(failTarget, failValue, failData),
                         simulateOk: false,
                         error: message,
+                        paramsHash: cachedConfig?.paramsHash,
+                        failureCategory,
                     });
                     const updated = await store.recordStrategyFailure(tokenId, message);
                     if (updated && !updated.enabled) {

@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem";
 
-export type StrategyType = "fixed_action" | "wrap_native" | "hotpump_watchlist" | "composite";
+export type StrategyType = "fixed_action" | "wrap_native" | "hotpump_watchlist" | "composite" | "llm_trader" | "manual_swap";
 
 /**
  * Child strategy definition used inside a composite strategy's strategyParams.children.
@@ -22,6 +22,23 @@ export interface AgentState {
     lastActionTimestamp: bigint;
 }
 
+/**
+ * On-chain instance configuration data read from InstanceConfig contract.
+ * These params are immutable once bound, so can be cached after first read.
+ */
+export interface InstanceConfigData {
+    policyId: number;
+    version: number;
+    slippageBps: number;
+    tradeLimit: bigint;
+    dailyLimit: bigint;
+    tokenGroupId: number;
+    dexGroupId: number;
+    riskTier: number;
+    paramsPacked: string;  // raw hex
+    paramsHash: string;    // 0x...
+}
+
 export interface Observation {
     tokenId: bigint;
     agentState: AgentState;
@@ -33,6 +50,8 @@ export interface Observation {
     blockNumber: bigint;
     blockTimestamp: bigint;
     timestamp: number;
+    /** V1.4 on-chain instance config (cached after first read) */
+    instanceConfig?: InstanceConfigData;
 }
 
 export interface ActionPayload {
@@ -134,6 +153,12 @@ export interface RunRecord {
     simulateOk: boolean;
     txHash?: string;
     error?: string;
+    /** V1.4: hash of instance params at execution time */
+    paramsHash?: string;
+    /** V1.4: LLM strategy explanation text */
+    strategyExplain?: string;
+    /** V1.4: error category from PolicyGuardV2.validate pre-check */
+    failureCategory?: string;
     createdAt: string;
 }
 

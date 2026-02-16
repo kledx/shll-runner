@@ -7,17 +7,20 @@ import type {
     StrategyConfigRecord,
     StrategyType,
 } from "./types.js";
+import { resolveLlmTrader, type LLMTraderConfig } from "./strategies/llmTrader.js";
 
-interface StrategyResolution {
+export interface StrategyResolution {
     action?: ActionPayload;
     reason: string;
+    /** V1.4: LLM explanation text */
+    explain?: string;
 }
 
 type StrategyHandler = (
     strategy: StrategyConfigRecord,
     obs: Observation,
     context: StrategyRuntimeContext
-) => StrategyResolution;
+) => Promise<StrategyResolution>;
 
 const WRAP_NATIVE_SELECTOR = "0xd0e30db0";
 const DEFAULT_SIGNAL_MAX_AGE_MS = 5 * 60_000;
@@ -25,6 +28,9 @@ const DEFAULT_SIGNAL_MAX_AGE_MS = 5 * 60_000;
 export interface StrategyRuntimeContext {
     nowMs: number;
     marketSignals: Map<string, MarketSignalRecord>;
+    /** V1.4: LLM configuration (injected from config) */
+    llmConfig?: LLMTraderConfig;
+    chainId?: number;
 }
 
 function parseWatchlistPairs(strategy: StrategyConfigRecord): string[] {
@@ -69,7 +75,7 @@ function parseBigIntParam(
 }
 
 const handlers: Record<StrategyType, StrategyHandler> = {
-    fixed_action: (strategy) => {
+    fixed_action: async (strategy) => {
         return {
             reason: "fixed_action ready",
             action: {
@@ -79,7 +85,7 @@ const handlers: Record<StrategyType, StrategyHandler> = {
             },
         };
     },
-    wrap_native: (strategy) => {
+    wrap_native: async (strategy) => {
         const value = BigInt(strategy.value);
         if (value <= 0n) {
             return {
@@ -95,7 +101,7 @@ const handlers: Record<StrategyType, StrategyHandler> = {
             },
         };
     },
-    hotpump_watchlist: (strategy, _obs, context) => {
+    hotpump_watchlist: async (strategy, _obs, context) => {
         const watchlistPairs = parseWatchlistPairs(strategy);
         if (watchlistPairs.length === 0) {
             return { reason: "hotpump_watchlist requires strategyParams.watchlistPairs" };
@@ -143,7 +149,7 @@ const handlers: Record<StrategyType, StrategyHandler> = {
             },
         };
     },
-    composite: (strategy, obs, context) => {
+    composite: async (strategy, obs, context) => {
         const params = strategy.strategyParams ?? {};
         const mode: string = (params.mode as string) ?? "first_match";
         const children = params.children;
@@ -173,7 +179,7 @@ const handlers: Record<StrategyType, StrategyHandler> = {
                 strategyParams: child.strategyParams ?? {},
             };
 
-            const resolution = childHandler(childRecord, obs, context);
+            const resolution = await childHandler(childRecord, obs, context);
             if (resolution.action) {
                 if (mode === "first_match") {
                     return {
@@ -199,17 +205,46 @@ const handlers: Record<StrategyType, StrategyHandler> = {
             reason: `composite: no child matched (${safeChildren.length} children, mode=${mode})`,
         };
     },
+    // V1.4: LLM-driven trading strategy
+    llm_trader: async (strategy, obs, context) => {
+        if (!context.llmConfig || !context.llmConfig.apiKey) {
+            return { reason: "llm_trader: LLM not configured (missing LLM_API_KEY)" };
+        }
+        const result = await resolveLlmTrader(
+            strategy,
+            obs,
+            context.marketSignals,
+            context.llmConfig,
+            context.chainId ?? 0
+        );
+        return {
+            action: result.action,
+            reason: result.reason,
+            explain: result.explain,
+        };
+    },
+    // V1.4: Manual swap — always defers to BYOR / API submission
+    manual_swap: async (strategy) => {
+        return {
+            reason: "manual_swap ready",
+            action: {
+                target: strategy.target as Address,
+                value: BigInt(strategy.value),
+                data: strategy.data,
+            },
+        };
+    },
 };
 
 export function listSupportedStrategies(): StrategyType[] {
     return Object.keys(handlers) as StrategyType[];
 }
 
-export function resolveStrategyAction(
+export async function resolveStrategyAction(
     strategy: StrategyConfigRecord,
     obs: Observation,
     context?: Partial<StrategyRuntimeContext>
-): StrategyResolution {
+): Promise<StrategyResolution> {
     const handler = handlers[strategy.strategyType];
     if (!handler) {
         return {
@@ -219,5 +254,7 @@ export function resolveStrategyAction(
     return handler(strategy, obs, {
         nowMs: context?.nowMs ?? Date.now(),
         marketSignals: context?.marketSignals ?? new Map<string, MarketSignalRecord>(),
+        llmConfig: context?.llmConfig,
+        chainId: context?.chainId,
     });
 }

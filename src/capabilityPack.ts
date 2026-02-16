@@ -7,7 +7,7 @@ const bigintLike = z.union([z.string(), z.number(), z.bigint()]);
 const entrySchema = z.object({
     tokenId: bigintLike,
     strategyType: z
-        .enum(["fixed_action", "wrap_native", "hotpump_watchlist"])
+        .enum(["fixed_action", "wrap_native", "hotpump_watchlist", "composite", "llm_trader", "manual_swap"])
         .default("fixed_action"),
     target: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
     data: z.string().regex(/^0x[0-9a-fA-F]*$/).optional(),
@@ -19,9 +19,20 @@ const entrySchema = z.object({
     enabled: z.boolean().optional(),
 });
 
+const llmProfileSchema = z.object({
+    model: z.string().optional(),
+    maxTokens: z.number().int().positive().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    systemPromptOverride: z.string().optional(),
+}).optional();
+
 const packSchema = z.object({
     name: z.string().optional(),
     version: z.string().optional(),
+    // V1.4: optional metadata
+    strategyId: z.string().optional(),
+    llmProfile: llmProfileSchema,
+    toolAllowList: z.array(z.string()).optional(),
     strategies: z.array(entrySchema),
 });
 
@@ -41,6 +52,17 @@ export interface NormalizedPackStrategy {
 export interface CapabilityPack {
     name?: string;
     version?: string;
+    /** V1.4: strategy identifier for routing */
+    strategyId?: string;
+    /** V1.4: LLM configuration overrides */
+    llmProfile?: {
+        model?: string;
+        maxTokens?: number;
+        timeoutMs?: number;
+        systemPromptOverride?: string;
+    };
+    /** V1.4: explicit tool allowlist for LLM strategies */
+    toolAllowList?: string[];
     strategies: NormalizedPackStrategy[];
 }
 
@@ -49,6 +71,9 @@ export function parseCapabilityPack(raw: unknown): CapabilityPack {
     return {
         name: parsed.name,
         version: parsed.version,
+        strategyId: parsed.strategyId,
+        llmProfile: parsed.llmProfile ?? undefined,
+        toolAllowList: parsed.toolAllowList,
         strategies: parsed.strategies.map((entry) => ({
             tokenId: BigInt(entry.tokenId),
             strategyType: entry.strategyType,

@@ -1,0 +1,39 @@
+{
+    "name": "SwapSafe_v1",
+    "version": "1.0.0",
+    "strategyId": "swapsafe@1",
+    "llmProfile": {
+        "model": "gemini-2.0-flash",
+        "maxTokens": 2048,
+        "timeoutMs": 30000
+    },
+    "toolAllowList": [
+        "getMarketSignal",
+        "listMarketSignals",
+        "getInstanceContext"
+    ],
+    "strategies": [
+        {
+            "tokenId": "0",
+            "strategyType": "llm_trader",
+            "target": "0x0000000000000000000000000000000000000000",
+            "data": "0x",
+            "value": "0",
+            "strategyParams": {
+                "maxSteps": 6,
+                "maxIntents": 2,
+                "minConfidence": 0.6,
+                "cooldownMs": 1800000,
+                "toolAllowList": [
+                    "getMarketSignal",
+                    "listMarketSignals",
+                    "getInstanceContext"
+                ]
+            },
+            "minIntervalMs": 300000,
+            "requirePositiveBalance": true,
+            "maxFailures": 5,
+            "enabled": true
+        }
+    ]
+}

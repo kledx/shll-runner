@@ -58,6 +58,23 @@ export const config = {
         "0x0000000000000000000000000000000000000000"
     ) as `0x${string}`,
 
+    // V1.4 contracts
+    instanceConfigAddress: optionalAny(
+        ["INSTANCE_CONFIG_ADDRESS"],
+        "0x0000000000000000000000000000000000000000"
+    ) as `0x${string}`,
+    policyGuardV2Address: optionalAny(
+        ["POLICY_GUARD_V2_ADDRESS"],
+        "0x0000000000000000000000000000000000000000"
+    ) as `0x${string}`,
+
+    // LLM configuration (for llm_trader strategy)
+    llmApiKey: optionalAny(["LLM_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"], ""),
+    llmBaseUrl: optionalAny(["LLM_BASE_URL"], "https://generativelanguage.googleapis.com/v1beta"),
+    llmModel: optionalAny(["LLM_MODEL"], "gemini-2.0-flash"),
+    llmMaxTokens: optionalInt("LLM_MAX_TOKENS", 2048),
+    llmTimeoutMs: optionalInt("LLM_TIMEOUT_MS", 30_000),
+
     // Default token
     tokenId: BigInt(optionalAny(["TOKEN_ID"], "0")),
     allowedTokenIds: optionalBigIntList("ALLOWED_TOKEN_IDS"),
