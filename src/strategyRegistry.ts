@@ -223,15 +223,10 @@ const handlers: Record<StrategyType, StrategyHandler> = {
             explain: result.explain,
         };
     },
-    // V1.4: Manual swap — always defers to BYOR / API submission
-    manual_swap: async (strategy) => {
+    // V1.4: Manual swap — passive strategy, only acts via BYOR / API submission
+    manual_swap: async () => {
         return {
-            reason: "manual_swap ready",
-            action: {
-                target: strategy.target as Address,
-                value: BigInt(strategy.value),
-                data: strategy.data,
-            },
+            reason: "manual_swap idle (awaiting BYOR submission)",
         };
     },
 };
