@@ -90,6 +90,9 @@ function mapRunRow(row: Record<string, unknown>): RunRecord {
         paramsHash: row.params_hash == null ? undefined : String(row.params_hash),
         strategyExplain: row.strategy_explain == null ? undefined : String(row.strategy_explain),
         failureCategory: row.failure_category == null ? undefined : String(row.failure_category),
+        brainType: row.brain_type == null ? undefined : String(row.brain_type),
+        intentType: row.intent_type == null ? undefined : String(row.intent_type),
+        decisionReason: row.decision_reason == null ? undefined : String(row.decision_reason),
         createdAt: toIso(row.created_at as Date | string),
     };
 }
@@ -311,6 +314,20 @@ export class RunnerStore {
         await this.pool.query(`
             ALTER TABLE runs
             ADD COLUMN IF NOT EXISTS failure_category TEXT NULL
+        `);
+
+        // V2.1: add brain/intent/reason columns to runs table
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS brain_type TEXT NULL
+        `);
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS intent_type TEXT NULL
+        `);
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS decision_reason TEXT NULL
         `);
     }
 
@@ -826,9 +843,12 @@ export class RunnerStore {
                 error,
                 params_hash,
                 strategy_explain,
-                failure_category
+                failure_category,
+                brain_type,
+                intent_type,
+                decision_reason
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
             RETURNING *
             `,
             [
@@ -842,6 +862,9 @@ export class RunnerStore {
                 input.paramsHash ?? null,
                 input.strategyExplain ?? null,
                 input.failureCategory ?? null,
+                input.brainType ?? null,
+                input.intentType ?? null,
+                input.decisionReason ?? null,
             ]
         );
 
@@ -874,5 +897,101 @@ export class RunnerStore {
             [this.chainId, tokenId.toString(), limit]
         );
         return result.rows.map((row) => mapRunRow(row as Record<string, unknown>));
+    }
+
+    // ── V2.1: Dashboard + Activity ─────────────────────────────────
+
+    /**
+     * Aggregated dashboard data for a single agent token.
+     */
+    async getDashboard(tokenId: bigint): Promise<{
+        autopilot: AutopilotRecord | null;
+        strategy: StrategyConfigRecord | null;
+        stats: {
+            totalRuns: number;
+            successRuns: number;
+            failedRuns: number;
+            latestRunAt: string | null;
+        };
+        recentRuns: RunRecord[];
+    }> {
+        const [autopilot, strategy, statsResult, recentRuns] = await Promise.all([
+            this.getAutopilot(tokenId),
+            this.getStrategy(tokenId),
+            this.pool.query(
+                `
+                SELECT
+                    COUNT(*)::int AS total_runs,
+                    COUNT(*) FILTER (WHERE tx_hash IS NOT NULL AND error IS NULL)::int AS success_runs,
+                    COUNT(*) FILTER (WHERE error IS NOT NULL)::int AS failed_runs,
+                    MAX(created_at) AS latest_run_at
+                FROM runs
+                WHERE chain_id = $1 AND token_id = $2
+                `,
+                [this.chainId, tokenId.toString()]
+            ),
+            this.listRuns(tokenId, 10),
+        ]);
+
+        const statsRow = statsResult.rows[0] as Record<string, unknown> | undefined;
+
+        return {
+            autopilot,
+            strategy,
+            stats: {
+                totalRuns: Number(statsRow?.total_runs ?? 0),
+                successRuns: Number(statsRow?.success_runs ?? 0),
+                failedRuns: Number(statsRow?.failed_runs ?? 0),
+                latestRunAt:
+                    statsRow?.latest_run_at != null
+                        ? toIso(statsRow.latest_run_at as Date | string)
+                        : null,
+            },
+            recentRuns,
+        };
+    }
+
+    /**
+     * Paginated activity log with optional brain/intent type filtering.
+     */
+    async getActivity(
+        tokenId: bigint,
+        options?: { limit?: number; offset?: number; brainType?: string }
+    ): Promise<{ total: number; items: RunRecord[] }> {
+        const limit = Math.max(1, Math.min(100, options?.limit ?? 20));
+        const offset = Math.max(0, options?.offset ?? 0);
+
+        const whereParts = ["chain_id = $1", "token_id = $2"];
+        const params: unknown[] = [this.chainId, tokenId.toString()];
+        let paramIdx = 3;
+
+        if (options?.brainType) {
+            whereParts.push(`brain_type = $${paramIdx}`);
+            params.push(options.brainType);
+            paramIdx++;
+        }
+
+        const whereClause = whereParts.join(" AND ");
+
+        const [countResult, itemsResult] = await Promise.all([
+            this.pool.query(
+                `SELECT COUNT(*)::int AS total FROM runs WHERE ${whereClause}`,
+                params
+            ),
+            this.pool.query(
+                `
+                SELECT * FROM runs
+                WHERE ${whereClause}
+                ORDER BY created_at DESC
+                LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
+                `,
+                [...params, limit, offset]
+            ),
+        ]);
+
+        return {
+            total: Number((countResult.rows[0] as Record<string, unknown>)?.total ?? 0),
+            items: itemsResult.rows.map((row) => mapRunRow(row as Record<string, unknown>)),
+        };
     }
 }

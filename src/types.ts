@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem";
 
-export type StrategyType = "fixed_action" | "wrap_native" | "hotpump_watchlist" | "composite" | "llm_trader" | "manual_swap";
+export type StrategyType = "fixed_action" | "wrap_native" | "hotpump_watchlist" | "composite" | "llm_trader" | "manual_swap" | "dca";
 
 /**
  * Child strategy definition used inside a composite strategy's strategyParams.children.
@@ -159,6 +159,12 @@ export interface RunRecord {
     strategyExplain?: string;
     /** V1.4: error category from PolicyGuardV2.validate pre-check */
     failureCategory?: string;
+    /** V2.1: strategy/brain type that generated this action */
+    brainType?: string;
+    /** V2.1: semantic intent type (swap, approve, wrap, etc.) */
+    intentType?: string;
+    /** V2.1: human-readable decision reason */
+    decisionReason?: string;
     createdAt: string;
 }
 

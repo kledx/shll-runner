@@ -1,3 +1,9 @@
+/**
+ * @deprecated V2.1 — Capability Packs are deprecated for the autonomous agent model.
+ * New strategies (e.g. DCA) should be configured via /strategy/upsert API directly.
+ * This module is retained for backward compatibility with existing packs.
+ * Future evolution: V2.3 Agent Templates.
+ */
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { StrategyType } from "./types.js";
@@ -10,6 +16,7 @@ const strategyTypeSchema = z.enum([
     "composite",
     "llm_trader",
     "manual_swap",
+    "dca",
 ]);
 const llmProfileSchema = z
     .object({
@@ -189,15 +196,15 @@ function parseManifestPack(raw: unknown): ManifestCapabilityPack {
         toolAllowList: parsed.toolAllowList,
         runner: parsed.runner
             ? {
-                  mode: parsed.runner.mode,
-                  strategyId: parsed.runner.strategyId,
-                  strategyType: parsed.runner.strategyType,
-                  tickSec: parsed.runner.tickSec,
-                  dataSource: parsed.runner.dataSource,
-                  paramsSchema: parsed.runner.paramsSchema,
-                  defaults: parsed.runner.defaults,
-                  externalRunner: parsed.runner.externalRunner,
-              }
+                mode: parsed.runner.mode,
+                strategyId: parsed.runner.strategyId,
+                strategyType: parsed.runner.strategyType,
+                tickSec: parsed.runner.tickSec,
+                dataSource: parsed.runner.dataSource,
+                paramsSchema: parsed.runner.paramsSchema,
+                defaults: parsed.runner.defaults,
+                externalRunner: parsed.runner.externalRunner,
+            }
             : undefined,
         networks: parsed.networks?.map((network) => ({
             chainId: network.chainId,

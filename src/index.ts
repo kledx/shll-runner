@@ -1246,6 +1246,55 @@ function startApiServer(): void {
                 return;
             }
 
+            // ── V2.1: Agent Dashboard + Activity ───────────────────
+
+            if (req.method === "GET" && url.pathname === "/agent/dashboard") {
+                const tokenIdParam = url.searchParams.get("tokenId");
+                if (!tokenIdParam) {
+                    writeJson(res, 400, { error: "tokenId is required" });
+                    return;
+                }
+                const tokenId = BigInt(tokenIdParam);
+                if (!isTokenAllowed(tokenId)) {
+                    writeJson(res, 403, { error: "tokenId not allowed" });
+                    return;
+                }
+                const dashboard = await store.getDashboard(tokenId);
+                writeJson(res, 200, {
+                    ok: true,
+                    tokenId: tokenId.toString(),
+                    ...dashboard,
+                });
+                return;
+            }
+
+            if (req.method === "GET" && url.pathname === "/agent/activity") {
+                const tokenIdParam = url.searchParams.get("tokenId");
+                if (!tokenIdParam) {
+                    writeJson(res, 400, { error: "tokenId is required" });
+                    return;
+                }
+                const tokenId = BigInt(tokenIdParam);
+                if (!isTokenAllowed(tokenId)) {
+                    writeJson(res, 403, { error: "tokenId not allowed" });
+                    return;
+                }
+                const limitRaw = url.searchParams.get("limit");
+                const offsetRaw = url.searchParams.get("offset");
+                const brainType = url.searchParams.get("brainType") ?? undefined;
+                const result = await store.getActivity(tokenId, {
+                    limit: limitRaw ? Number.parseInt(limitRaw, 10) : undefined,
+                    offset: offsetRaw ? Number.parseInt(offsetRaw, 10) : undefined,
+                    brainType,
+                });
+                writeJson(res, 200, {
+                    ok: true,
+                    tokenId: tokenId.toString(),
+                    ...result,
+                });
+                return;
+            }
+
             if (req.method === "GET" && url.pathname === "/autopilots") {
                 writeJson(res, 200, { ok: true, items: await store.listAutopilots() });
                 return;

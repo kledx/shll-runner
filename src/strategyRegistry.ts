@@ -8,6 +8,7 @@ import type {
     StrategyType,
 } from "./types.js";
 import { resolveLlmTrader, type LLMTraderConfig } from "./strategies/llmTrader.js";
+import { resolveDCA } from "./strategies/dca.js";
 
 export interface StrategyResolution {
     action?: ActionPayload;
@@ -228,6 +229,10 @@ const handlers: Record<StrategyType, StrategyHandler> = {
         return {
             reason: "manual_swap idle (awaiting BYOR submission)",
         };
+    },
+    // V2.1: DCA (Dollar-Cost Averaging) — periodic buy of target token
+    dca: async (strategy, obs, context) => {
+        return resolveDCA(strategy, obs, context);
     },
 };
 
