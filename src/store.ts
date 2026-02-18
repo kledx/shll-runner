@@ -6,6 +6,7 @@ import type {
     StrategyConfigRecord,
     StrategyType,
 } from "./types.js";
+import { runV30Migrations } from "./store/migrations.js";
 
 interface RunnerStoreConfig {
     chainId: number;
@@ -334,6 +335,9 @@ export class RunnerStore {
             ALTER TABLE runs
             ADD COLUMN IF NOT EXISTS decision_reason TEXT NULL
         `);
+
+        // V3.0: create agent_memory, user_safety_configs, agent_blueprints tables
+        await runV30Migrations(this.pool);
     }
 
     async close(): Promise<void> {
