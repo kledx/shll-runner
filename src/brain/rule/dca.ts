@@ -49,6 +49,16 @@ export class DCABrain implements IBrain {
         _memories: MemoryEntry[],
         actions: IAction[],
     ): Promise<Decision> {
+        // Validate DCA config — all required fields must be set
+        if (!this.config.routerAddress || !this.config.tokenToBuy || !this.config.tokenToSpend) {
+            return {
+                action: "wait",
+                params: {},
+                reasoning: "DCA: strategy not configured (missing router/tokenToBuy/tokenToSpend). Set strategyParams via /strategy/upsert.",
+                confidence: 1.0,
+            };
+        }
+
         // Validate swap action is available
         const hasSwap = actions.some(a => a.name === "swap");
         if (!hasSwap) {
