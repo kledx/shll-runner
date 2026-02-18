@@ -100,13 +100,25 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
         if (!llmConfig) {
             throw new Error("LLM brain requires llmConfig from blueprint");
         }
+
+        // Merge user-defined trading goal from strategyParams into prompt
+        let systemPrompt = llmConfig.systemPrompt;
+        const sp = ctx.strategyParams ?? {};
+        if (typeof sp.tradingGoal === "string" && sp.tradingGoal.trim()) {
+            systemPrompt += `\n\n## User Trading Goal\n${sp.tradingGoal.trim()}`;
+        }
+        if (Array.isArray(sp.watchTokens) && sp.watchTokens.length > 0) {
+            systemPrompt += `\n\n## Tokens to Watch\n${(sp.watchTokens as string[]).join(", ")}`;
+        }
+
+        const mergedConfig = { ...llmConfig, systemPrompt };
         const provider = createLLMProvider(
             llmConfig.provider,
             llmConfig.apiKey ?? process.env.LLM_API_KEY ?? "",
             llmConfig.model,
             { endpoint: llmConfig.endpoint },
         );
-        return new LLMBrain(llmConfig, provider);
+        return new LLMBrain(mergedConfig, provider);
     });
 
     // ── Actions ────────────────────────────────────────
