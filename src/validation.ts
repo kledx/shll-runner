@@ -47,7 +47,7 @@ const strategyUpsertSchema = z.object({
     strategyType: z
         .enum(["dca", "llm_trader"])
         .optional(),
-    target: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+    target: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
     data: z.string().regex(/^0x[0-9a-fA-F]*$/).optional(),
     value: bigintLike.optional(),
     strategyParams: z.record(z.string(), z.unknown()).optional(),

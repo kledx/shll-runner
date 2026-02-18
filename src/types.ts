@@ -60,7 +60,7 @@ export interface DisableRequestPayload {
 export interface StrategyUpsertPayload {
     tokenId: string | number | bigint;
     strategyType?: StrategyType;
-    target: string;
+    target?: string;
     data?: string;
     value?: string | number | bigint;
     strategyParams?: Record<string, unknown>;
