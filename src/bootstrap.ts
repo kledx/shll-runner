@@ -101,6 +101,12 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
             throw new Error("LLM brain requires llmConfig from blueprint");
         }
 
+        // Env vars override blueprint defaults — allows any OpenAI-compatible provider
+        const provider = process.env.LLM_PROVIDER || llmConfig.provider;
+        const model = process.env.LLM_MODEL || llmConfig.model;
+        const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || llmConfig.apiKey || "";
+        const endpoint = process.env.LLM_BASE_URL || llmConfig.endpoint; // undefined → use PROVIDER_ENDPOINTS lookup
+
         // Merge user-defined trading goal from strategyParams into prompt
         let systemPrompt = llmConfig.systemPrompt;
         const sp = ctx.strategyParams ?? {};
@@ -112,13 +118,17 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
         }
 
         const mergedConfig = { ...llmConfig, systemPrompt };
-        const provider = createLLMProvider(
-            llmConfig.provider,
-            llmConfig.apiKey ?? process.env.LLM_API_KEY ?? "",
-            llmConfig.model,
-            { endpoint: llmConfig.endpoint },
+        const llmProvider = createLLMProvider(
+            provider,
+            apiKey,
+            model,
+            {
+                endpoint,
+                maxTokens: Number(process.env.LLM_MAX_TOKENS) || llmConfig.maxStepsPerRun || 2048,
+                timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || 30_000,
+            },
         );
-        return new LLMBrain(mergedConfig, provider);
+        return new LLMBrain(mergedConfig, llmProvider);
     });
 
     // ── Actions ────────────────────────────────────────
