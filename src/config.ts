@@ -53,18 +53,13 @@ export const config = {
 
     // Contract addresses
     agentNfaAddress: requiredAny(["AGENT_NFA_ADDRESS", "AGENT_NFA"]) as `0x${string}`,
-    policyGuardAddress: optionalAny(
-        ["POLICY_GUARD_ADDRESS", "POLICY_GUARD"],
+    // V3.0 contracts
+    policyGuardV4Address: optionalAny(
+        ["POLICY_GUARD_V4_ADDRESS", "POLICY_GUARD_ADDRESS", "POLICY_GUARD"],
         "0x0000000000000000000000000000000000000000"
     ) as `0x${string}`,
-
-    // V1.4 contracts
-    instanceConfigAddress: optionalAny(
-        ["INSTANCE_CONFIG_ADDRESS"],
-        "0x0000000000000000000000000000000000000000"
-    ) as `0x${string}`,
-    policyGuardV2Address: optionalAny(
-        ["POLICY_GUARD_V2_ADDRESS"],
+    wbnbAddress: optionalAny(
+        ["WBNB_ADDRESS"],
         "0x0000000000000000000000000000000000000000"
     ) as `0x${string}`,
 
@@ -90,25 +85,8 @@ export const config = {
     apiHost: optionalAny(["API_HOST"], "0.0.0.0"),
     apiKey: optionalAny(["API_KEY"], ""),
 
-    // Optional auto action
+    // Auto-action (add default token to polling set)
     autoActionEnabled: optionalBool("AUTO_ACTION_ENABLED", false),
-    autoActionTarget: optionalAny(
-        ["AUTO_ACTION_TARGET"],
-        "0x0000000000000000000000000000000000000000"
-    ) as `0x${string}`,
-    autoActionData: optionalAny(["AUTO_ACTION_DATA"], "0x") as `0x${string}`,
-    autoActionValue: BigInt(optionalAny(["AUTO_ACTION_VALUE"], "0")),
-    minActionIntervalMs: parseInt(optionalAny(["MIN_ACTION_INTERVAL_MS"], "300000"), 10),
-    requirePositiveBalance: optionalBool("REQUIRE_POSITIVE_BALANCE", true),
-    strategyMaxFailuresDefault: parseInt(
-        optionalAny(["STRATEGY_MAX_FAILURES_DEFAULT"], "5"),
-        10
-    ),
-    capabilityPackPath: optionalAny(["CAPABILITY_PACK_PATH"], ""),
-    capabilityPackPublicKey: optionalAny(["CAPABILITY_PACK_PUBLIC_KEY"], ""),
-    capabilityPackRequireSignature: optionalBool("CAPABILITY_PACK_REQUIRE_SIGNATURE", false),
-    defaultMaxRunsPerDay: optionalInt("DEFAULT_MAX_RUNS_PER_DAY", 0),
-    defaultMaxValuePerDay: BigInt(optionalAny(["DEFAULT_MAX_VALUE_PER_DAY"], "0")),
     marketSignalSyncEnabled: optionalBool("MARKET_SIGNAL_SYNC_ENABLED", false),
     marketSignalSourceUrl: optionalAny(["MARKET_SIGNAL_SOURCE_URL"], ""),
     marketSignalSourceApiKey: optionalAny(["MARKET_SIGNAL_SOURCE_API_KEY"], ""),

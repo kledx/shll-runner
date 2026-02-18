@@ -2,17 +2,7 @@ import type { Address, Hex } from "viem";
 
 export type StrategyType = "fixed_action" | "wrap_native" | "hotpump_watchlist" | "composite" | "llm_trader" | "manual_swap" | "dca";
 
-/**
- * Child strategy definition used inside a composite strategy's strategyParams.children.
- * Each child carries its own strategyType, target, data, value, and params.
- */
-export interface CompositeChildStrategy {
-    strategyType: Exclude<StrategyType, "composite">;
-    target: string;
-    data: string;
-    value: string;
-    strategyParams: Record<string, unknown>;
-}
+
 
 export interface AgentState {
     balance: bigint;
@@ -22,22 +12,6 @@ export interface AgentState {
     lastActionTimestamp: bigint;
 }
 
-/**
- * On-chain instance configuration data read from InstanceConfig contract.
- * These params are immutable once bound, so can be cached after first read.
- */
-export interface InstanceConfigData {
-    policyId: number;
-    version: number;
-    slippageBps: number;
-    tradeLimit: bigint;
-    dailyLimit: bigint;
-    tokenGroupId: number;
-    dexGroupId: number;
-    riskTier: number;
-    paramsPacked: string;  // raw hex
-    paramsHash: string;    // 0x...
-}
 
 export interface Observation {
     tokenId: bigint;
@@ -50,8 +24,6 @@ export interface Observation {
     blockNumber: bigint;
     blockTimestamp: bigint;
     timestamp: number;
-    /** V1.4 on-chain instance config (cached after first read) */
-    instanceConfig?: InstanceConfigData;
 }
 
 export interface ActionPayload {
@@ -60,11 +32,6 @@ export interface ActionPayload {
     data: Hex;
 }
 
-export interface Decision {
-    shouldAct: boolean;
-    reason: string;
-    action?: ActionPayload;
-}
 
 export interface OperatorPermitPayload {
     tokenId: string | number | bigint;
@@ -191,15 +158,6 @@ export interface StrategyConfigRecord {
     updatedAt: string;
 }
 
-export interface StrategyLoadPackPayload {
-    filePath?: string;
-    pack?: unknown;
-    tokenIds?: Array<string | number | bigint>;
-    hash?: string;
-    signature?: string;
-    publicKey?: string;
-    dryRun?: boolean;
-}
 
 export interface MarketSignalUpsertPayload {
     pair: string;

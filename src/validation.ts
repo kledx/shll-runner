@@ -7,7 +7,6 @@ import type {
     MarketSignalUpsertPayload,
     NormalizedPermit,
     OperatorPermitPayload,
-    StrategyLoadPackPayload,
     StrategyQueryPayload,
     StrategyUpsertPayload,
 } from "./types.js";
@@ -69,15 +68,6 @@ const strategyQuerySchema = z.object({
     tokenId: z.string().regex(/^\d+$/).optional(),
 });
 
-const strategyLoadPackSchema = z.object({
-    filePath: z.string().min(1).optional(),
-    pack: z.unknown().optional(),
-    tokenIds: z.array(bigintLike).min(1).max(200).optional(),
-    hash: z.string().regex(/^(0x)?[0-9a-fA-F]{64}$/).optional(),
-    signature: z.string().min(8).optional(),
-    publicKey: z.string().min(16).optional(),
-    dryRun: z.boolean().optional(),
-});
 
 const marketSignalUpsertSchema = z.object({
     pair: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
@@ -109,9 +99,6 @@ export function parseStrategyUpsertPayload(body: unknown): StrategyUpsertPayload
     return strategyUpsertSchema.parse(body);
 }
 
-export function parseStrategyLoadPackPayload(body: unknown): StrategyLoadPackPayload {
-    return strategyLoadPackSchema.parse(body);
-}
 
 export function parseMarketSignalUpsertPayload(body: unknown): MarketSignalUpsertPayload {
     return marketSignalUpsertSchema.parse(body);
