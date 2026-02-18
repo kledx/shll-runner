@@ -45,14 +45,7 @@ const statusQuerySchema = z.object({
 const strategyUpsertSchema = z.object({
     tokenId: bigintLike,
     strategyType: z
-        .enum([
-            "fixed_action",
-            "wrap_native",
-            "hotpump_watchlist",
-            "composite",
-            "llm_trader",
-            "manual_swap",
-        ])
+        .enum(["dca", "llm_trader"])
         .optional(),
     target: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
     data: z.string().regex(/^0x[0-9a-fA-F]*$/).optional(),

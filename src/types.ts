@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem";
 
-export type StrategyType = "fixed_action" | "wrap_native" | "hotpump_watchlist" | "composite" | "llm_trader" | "manual_swap" | "dca";
+export type StrategyType = "dca" | "llm_trader";
 
 
 
