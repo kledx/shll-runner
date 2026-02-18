@@ -443,8 +443,27 @@ function startApiServer(): void {
                 return;
             }
 
-            // V3.0: /strategy/upsert removed (use V3 Agent Blueprints)
-
+            // /strategy/upsert — configure agent strategy params (needed by V3 brains)
+            if (req.method === "POST" && url.pathname === "/strategy/upsert") {
+                const body = await parseBody(req);
+                const payload = parseStrategyUpsertPayload(body);
+                const record = await store.upsertStrategy({
+                    tokenId: BigInt(payload.tokenId),
+                    strategyType: payload.strategyType ?? "manual_swap",
+                    target: payload.target ?? "",
+                    data: payload.data ?? "0x",
+                    value: BigInt(payload.value ?? 0),
+                    strategyParams: payload.strategyParams ?? {},
+                    source: "api",
+                    minIntervalMs: payload.minIntervalMs ?? 300_000,
+                    requirePositiveBalance: payload.requirePositiveBalance ?? true,
+                    maxFailures: payload.maxFailures ?? 5,
+                    enabled: payload.enabled ?? true,
+                });
+                log.info(`Strategy upserted: tokenId=${payload.tokenId} type=${payload.strategyType}`);
+                writeJson(res, 200, { ok: true, strategy: record });
+                return;
+            }
 
             if (req.method === "POST" && url.pathname === "/market/signal") {
                 const body = await parseBody(req);
