@@ -450,12 +450,7 @@ export function startApiServer(ctx: ApiServerContext): void {
                     return;
                 }
                 const tokenId = BigInt(tokenIdParam);
-                if (!isTokenAllowed(tokenId, allowedTokenIdSet)) {
-                    writeJson(res, 403, {
-                        error: "tokenId not allowed",
-                    });
-                    return;
-                }
+                // Read-only endpoint — no token allowlist check needed
                 const dashboard = await store.getDashboard(tokenId);
                 writeJson(res, 200, {
                     ok: true,
@@ -479,12 +474,7 @@ export function startApiServer(ctx: ApiServerContext): void {
                     return;
                 }
                 const tokenId = BigInt(tokenIdParam);
-                if (!isTokenAllowed(tokenId, allowedTokenIdSet)) {
-                    writeJson(res, 403, {
-                        error: "tokenId not allowed",
-                    });
-                    return;
-                }
+                // Read-only endpoint — no token allowlist check needed
                 const limitRaw = url.searchParams.get("limit");
                 const offsetRaw = url.searchParams.get("offset");
                 const brainType =
