@@ -28,8 +28,18 @@ const MAX_UINT256 = BigInt(
 export function createApproveAction(): IAction {
     return {
         name: "approve",
-        description: "Approve a spender (DEX router) to spend an ERC20 token. Params: token, spender, amount (optional, defaults to max)",
+        description: "Approve a spender (DEX router) to spend an ERC20 token. Defaults to max approval if amount is omitted.",
         readonly: false,
+
+        parameters: {
+            type: "object",
+            properties: {
+                token: { type: "string", description: "ERC20 token contract address to approve (0x...)" },
+                spender: { type: "string", description: "Spender address to grant allowance to (usually the DEX router)" },
+                amount: { type: "string", description: "Approval amount in wei. Omit for unlimited (max uint256)." },
+            },
+            required: ["token", "spender"],
+        },
 
         encode(params: Record<string, unknown>): ActionPayload {
             const token = params.token as string;

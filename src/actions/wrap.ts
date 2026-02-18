@@ -30,8 +30,17 @@ const WBNB_WITHDRAW_ABI = [
 export function createWrapAction(wbnbAddress: Address): IAction {
     return {
         name: "wrap",
-        description: "Wrap native BNB into WBNB or unwrap WBNB into BNB. Params: direction ('wrap'|'unwrap'), amount",
+        description: "Wrap native BNB into WBNB or unwrap WBNB into BNB.",
         readonly: false,
+
+        parameters: {
+            type: "object",
+            properties: {
+                direction: { type: "string", description: "Direction of wrapping", enum: ["wrap", "unwrap"] },
+                amount: { type: "string", description: "Amount in wei to wrap or unwrap" },
+            },
+            required: ["direction", "amount"],
+        },
 
         encode(params: Record<string, unknown>): ActionPayload {
             const direction = params.direction as string || "wrap";

@@ -55,8 +55,20 @@ const DEFAULT_DEADLINE_OFFSET = 20 * 60; // 20 minutes
 export function createSwapAction(): IAction {
     return {
         name: "swap",
-        description: "Swap tokens on a DEX (PancakeSwap V2 compatible). Params: router, tokenIn, tokenOut, amountIn, minOut, vault (required)",
+        description: "Swap tokens on a DEX (PancakeSwap V2 compatible). The vault address is auto-injected — do NOT include it in params.",
         readonly: false,
+
+        parameters: {
+            type: "object",
+            properties: {
+                router: { type: "string", description: "DEX router contract address (0x...)" },
+                tokenIn: { type: "string", description: "Input token address. Use 0x0000000000000000000000000000000000000000 for native BNB." },
+                tokenOut: { type: "string", description: "Output token address (0x...)" },
+                amountIn: { type: "string", description: "Amount of input token in wei (e.g. '1000000000000000' for 0.001 with 18 decimals)" },
+                minOut: { type: "string", description: "Minimum output amount in wei. Set to '0' if price impact is acceptable." },
+            },
+            required: ["router", "tokenIn", "tokenOut", "amountIn"],
+        },
 
         encode(params: Record<string, unknown>): ActionPayload {
             const router = params.router as string;
