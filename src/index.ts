@@ -770,15 +770,18 @@ async function runLoop(): Promise<void> {
                     if (!agentManager.isActive(tokenId)) {
                         // Read on-chain data to create agent
                         const obs = await chain.observe(tokenId);
+                        // TODO: read agentType from chain once Observation type includes it
+                        // For now, use "dca" — the BLUEPRINT key, not the brain type "rule:dca"
+                        const agentType = "dca";
                         agentManager.startAgent({
                             tokenId,
-                            agentType: "rule:dca",  // TODO: read from chain/DB
+                            agentType,
                             owner: obs.agentState.owner,
                             renter: obs.renter,
                             vault: obs.agentAccount,
                             strategyParams: (await store.getStrategy(tokenId))?.strategyParams,
                         });
-                        log.info(`[V3] Agent ${tokenId.toString()} started`);
+                        log.info(`[V3] Agent ${tokenId.toString()} started (type=${agentType})`);
                     }
 
                     const agent = agentManager.getAgent(tokenId);
