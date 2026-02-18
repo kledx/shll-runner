@@ -443,13 +443,17 @@ function startApiServer(): void {
                 return;
             }
 
-            // /strategy/upsert — configure agent strategy params (needed by V3 brains)
+            // /strategy/upsert — configure agent execution params (V3: type from template)
             if (req.method === "POST" && url.pathname === "/strategy/upsert") {
                 const body = await parseBody(req);
                 const payload = parseStrategyUpsertPayload(body);
+                if (!payload.strategyType) {
+                    writeJson(res, 400, { error: "strategyType is required" });
+                    return;
+                }
                 const record = await store.upsertStrategy({
                     tokenId: BigInt(payload.tokenId),
-                    strategyType: payload.strategyType ?? "manual_swap",
+                    strategyType: payload.strategyType,
                     target: payload.target ?? "",
                     data: payload.data ?? "0x",
                     value: BigInt(payload.value ?? 0),
