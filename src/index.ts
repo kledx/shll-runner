@@ -72,7 +72,7 @@ async function main(): Promise<void> {
         void runMarketSignalSyncLoop({ store, config, log });
     }
 
-    await startScheduler({ store, chain, config, allowedTokenIdSet, agentManager, log });
+    await startScheduler({ store, chain, config, agentManager, log });
 }
 
 main().catch((err) => {

@@ -111,4 +111,11 @@ export const AgentNFAAbi = [
         outputs: [{ name: "", type: "address" }],
         stateMutability: "view",
     },
+    {
+        type: "function",
+        name: "agentType",
+        inputs: [{ name: "tokenId", type: "uint256" }],
+        outputs: [{ name: "", type: "bytes32" }],
+        stateMutability: "view",
+    },
 ] as const;

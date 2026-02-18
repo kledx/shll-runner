@@ -85,8 +85,7 @@ export const config = {
     apiHost: optionalAny(["API_HOST"], "0.0.0.0"),
     apiKey: optionalAny(["API_KEY"], ""),
 
-    // Auto-action (add default token to polling set)
-    autoActionEnabled: optionalBool("AUTO_ACTION_ENABLED", false),
+
     marketSignalSyncEnabled: optionalBool("MARKET_SIGNAL_SYNC_ENABLED", false),
     marketSignalSourceUrl: optionalAny(["MARKET_SIGNAL_SOURCE_URL"], ""),
     marketSignalSourceApiKey: optionalAny(["MARKET_SIGNAL_SOURCE_API_KEY"], ""),

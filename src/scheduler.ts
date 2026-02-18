@@ -20,8 +20,6 @@ export interface SchedulerConfig {
     pollIntervalMs: number;
     tokenLockLeaseMs: number;
     maxRetries: number;
-    autoActionEnabled: boolean;
-    tokenId: bigint;
     agentNfaAddress: string;
     databaseUrl: string;
     pgHost: string;
@@ -33,7 +31,6 @@ export interface SchedulerContext {
     store: RunnerStore;
     chain: ChainServices;
     config: SchedulerConfig;
-    allowedTokenIdSet: Set<string>;
     agentManager: AgentManager;
     log: Logger;
 }
@@ -57,12 +54,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function startScheduler(ctx: SchedulerContext): Promise<void> {
-    const { store, chain, config, allowedTokenIdSet, agentManager, log } = ctx;
+    const { store, chain, config, agentManager, log } = ctx;
 
     log.info("=== SHLL Agent Runner (V3.0) ===");
     log.info(`Operator: ${chain.account.address}`);
     log.info(`Agent NFA: ${config.agentNfaAddress}`);
-    log.info(`Allowed token IDs: ${[...allowedTokenIdSet].join(", ")}`);
     log.info(`Poll interval: ${config.pollIntervalMs}ms`);
     log.info(
         `Store backend: postgres (${config.databaseUrl ? "DATABASE_URL" : `${config.pgHost}:${config.pgPort}/${config.pgDatabase}`})`,
@@ -75,21 +71,14 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
         try {
             lastLoopAt = Date.now();
 
-            // Collect enabled token IDs from DB
-            const tokenSet = new Set<string>();
-            for (const tokenId of await store.listEnabledTokenIds()) {
-                tokenSet.add(tokenId.toString());
-            }
-            if (config.autoActionEnabled) {
-                tokenSet.add(config.tokenId.toString());
+            // V3: token discovery from token_strategies JOIN autopilots
+            const schedulableTokenIds = await store.listSchedulableTokenIds();
+
+            if (schedulableTokenIds.length === 0) {
+                log.info("[Tick] idle — no schedulable tokens");
             }
 
-            if (tokenSet.size === 0) {
-                log.info("[Tick] idle — no enabled autopilot token");
-            }
-
-            for (const tokenIdRaw of tokenSet) {
-                const tokenId = BigInt(tokenIdRaw);
+            for (const tokenId of schedulableTokenIds) {
                 const autopilot = await store.getAutopilot(tokenId);
                 let acquiredDbLock = false;
 
@@ -105,9 +94,9 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
                     // Ensure agent is started in the manager
                     if (!agentManager.isActive(tokenId)) {
                         const obs = await chain.observe(tokenId);
-                        // Read agentType from strategy config or default to "dca"
+                        // V3: read agentType from chain (bytes32 → string)
+                        const agentType = await chain.readAgentType(tokenId) || "dca";
                         const strategy = await store.getStrategy(tokenId);
-                        const agentType = strategy?.strategyType === "dca" ? "dca" : "dca";
                         agentManager.startAgent({
                             tokenId,
                             agentType,

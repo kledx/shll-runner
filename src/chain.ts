@@ -8,6 +8,7 @@
 import {
     createPublicClient,
     createWalletClient,
+    hexToString,
     http,
     type Address,
     type Hex,
@@ -46,6 +47,7 @@ export interface ChainServices {
         tokenId: bigint,
         action: ActionPayload,
     ) => Promise<ActionResult>;
+    readAgentType: (tokenId: bigint) => Promise<string>;
 }
 
 interface ChainConfig {
@@ -275,6 +277,17 @@ export function createChainServices(config: ChainConfig): ChainServices {
         };
     }
 
+    async function readAgentType(tokenId: bigint): Promise<string> {
+        const raw = await publicClient.readContract({
+            address: config.agentNfaAddress,
+            abi: AgentNFAAbi,
+            functionName: "agentType",
+            args: [tokenId],
+        });
+        // bytes32 → string, trim trailing null bytes
+        return hexToString(raw as `0x${string}`, { size: 32 }).replace(/\0+$/, "");
+    }
+
     return {
         publicClient,
         account,
@@ -283,5 +296,6 @@ export function createChainServices(config: ChainConfig): ChainServices {
         enableOperatorWithPermit,
         clearOperator,
         executeAction,
+        readAgentType,
     };
 }

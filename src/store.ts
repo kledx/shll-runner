@@ -459,6 +459,27 @@ export class RunnerStore {
         return result.rows.map((row) => BigInt(String(row.token_id)));
     }
 
+    /**
+     * V3: List token IDs that are schedulable (strategy enabled AND autopilot enabled).
+     * This is the primary scheduling source for the V3 scheduler.
+     */
+    async listSchedulableTokenIds(): Promise<bigint[]> {
+        const result = await this.pool.query(
+            `
+            SELECT DISTINCT ts.token_id
+            FROM token_strategies ts
+            JOIN autopilots ap
+                ON ts.chain_id = ap.chain_id AND ts.token_id = ap.token_id
+            WHERE ts.chain_id = $1
+                AND ts.enabled = TRUE
+                AND ap.enabled = TRUE
+            ORDER BY ts.token_id ASC
+            `,
+            [this.chainId]
+        );
+        return result.rows.map((row) => BigInt(String(row.token_id)));
+    }
+
     async listAutopilots(): Promise<AutopilotRecord[]> {
         const result = await this.pool.query(
             `
