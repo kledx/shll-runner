@@ -20,6 +20,7 @@ import type {
 } from "./types.js";
 
 export interface ChainServices {
+    publicClient: import("viem").PublicClient;
     account: { address: Address };
     observe: (tokenId: bigint) => Promise<Observation>;
     readStatus: (tokenId: bigint) => Promise<{
@@ -354,6 +355,7 @@ export function createChainServices(config: ChainConfig): ChainServices {
     }
 
     return {
+        publicClient,
         account,
         observe,
         readStatus,

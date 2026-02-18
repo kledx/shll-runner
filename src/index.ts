@@ -23,29 +23,19 @@ import {
     parseMarketSignalBatchUpsertPayload,
     parseMarketSignalSyncRequestPayload,
     parseMarketSignalUpsertPayload,
-    parseStrategyLoadPackPayload,
     parseStrategyQuery,
     parseStrategyUpsertPayload,
     parseStatusQuery,
 } from "./validation.js";
 import type {
-    ActionPayload,
-    Decision,
     MarketSignalUpsertPayload,
     MarketSignalRecord,
-    Observation,
-    StrategyConfigRecord,
-    StrategyType,
 } from "./types.js";
-import { listSupportedStrategies, resolveStrategyAction } from "./strategyRegistry.js";
-import {
-    loadCapabilityPackFromFile,
-    parseCapabilityPack,
-    type CapabilityPack,
-    type ManifestCapabilityPack,
-} from "./capabilityPack.js";
-import { sha256Hex, verifyPackSignature } from "./packSecurity.js";
-import { formatByorSchemaResponse, validateByorSubmission, checkByorSandbox } from "./byor.js";
+import { handleV3Routes } from "./api/router.js";
+import { AgentManager } from "./agent/manager.js";
+import { runAgentCycle, recordExecution } from "./agent/runtime.js";
+import { bootstrapAgentModules } from "./bootstrap.js";
+import { AgentNFAAbi } from "./abi.js";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 
@@ -80,39 +70,10 @@ let lastLoopAt = 0;
 let lastMarketSignalSyncAt = 0;
 let lastMarketSignalSyncError: string | null = null;
 
-// V1.4: Cache instance configs (immutable after bind, only need to read once)
-import type { InstanceConfigData } from "./types.js";
-const instanceConfigCache = new Map<string, InstanceConfigData>();
+// V3.0 Agent Manager (lifecycle for Agent instances)
+const agentManager = new AgentManager();
 
-interface ExecutionProfile {
-    source: "strategy" | "global" | "none";
-    action?: ActionPayload;
-    minIntervalMs: number;
-    requirePositiveBalance: boolean;
-    strategyReason?: string;
-}
 
-interface StrategyInputNormalized {
-    tokenId: bigint;
-    strategyType: StrategyType;
-    target: string;
-    data: `0x${string}`;
-    value: bigint;
-    strategyParams: Record<string, unknown>;
-    minIntervalMs: number;
-    requirePositiveBalance: boolean;
-    maxFailures: number;
-    enabled: boolean;
-    source: string;
-}
-
-interface StrategyRiskLimits {
-    allowedTargets: string[];
-    allowedSelectors: string[];
-    maxValuePerRun: bigint;
-    maxRunsPerDay: number;
-    maxValuePerDay: bigint;
-}
 
 interface NormalizedMarketSignalInput {
     pair: string;
@@ -123,239 +84,9 @@ interface NormalizedMarketSignalInput {
     source: string;
 }
 
-function parseBigintUnknown(value: unknown, fallback: bigint): bigint {
-    try {
-        if (typeof value === "bigint") return value;
-        if (typeof value === "number" && Number.isFinite(value)) return BigInt(value);
-        if (typeof value === "string" && value.trim()) return BigInt(value.trim());
-    } catch {
-        // fall through
-    }
-    return fallback;
-}
 
-function parseIntUnknown(value: unknown, fallback: number): number {
-    if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.floor(value));
-    if (typeof value === "string" && value.trim()) {
-        const parsed = Number.parseInt(value.trim(), 10);
-        if (Number.isFinite(parsed)) return Math.max(0, parsed);
-    }
-    return fallback;
-}
 
-function parseRiskLimits(strategy: StrategyConfigRecord): StrategyRiskLimits {
-    const params = strategy.strategyParams ?? {};
-    const allowedTargetsRaw = Array.isArray(params.allowedTargets)
-        ? (params.allowedTargets as unknown[])
-        : [];
-    const allowedSelectorsRaw = Array.isArray(params.allowedSelectors)
-        ? (params.allowedSelectors as unknown[])
-        : [];
 
-    const allowedTargets = allowedTargetsRaw
-        .filter((v): v is string => typeof v === "string" && /^0x[a-fA-F0-9]{40}$/.test(v))
-        .map((v) => v.toLowerCase());
-    const allowedSelectors = allowedSelectorsRaw
-        .filter((v): v is string => typeof v === "string" && /^0x[0-9a-fA-F]{8}$/.test(v))
-        .map((v) => v.toLowerCase());
-
-    return {
-        allowedTargets,
-        allowedSelectors,
-        maxValuePerRun: parseBigintUnknown(params.maxValuePerRun, 0n),
-        maxRunsPerDay: parseIntUnknown(params.maxRunsPerDay, config.defaultMaxRunsPerDay),
-        maxValuePerDay: parseBigintUnknown(params.maxValuePerDay, config.defaultMaxValuePerDay),
-    };
-}
-
-function actionSelector(data: string): string {
-    if (!data || data === "0x" || data.length < 10) return "0x";
-    return data.slice(0, 10).toLowerCase();
-}
-
-function enforceStrategySandbox(
-    strategy: StrategyConfigRecord,
-    action: ActionPayload
-): { ok: boolean; reason?: string; limits: StrategyRiskLimits } {
-    const limits = parseRiskLimits(strategy);
-
-    if (limits.allowedTargets.length > 0) {
-        const target = action.target.toLowerCase();
-        if (!limits.allowedTargets.includes(target)) {
-            return {
-                ok: false,
-                reason: `Target blocked by sandbox: ${action.target}`,
-                limits,
-            };
-        }
-    }
-
-    if (limits.allowedSelectors.length > 0) {
-        const selector = actionSelector(action.data);
-        if (!limits.allowedSelectors.includes(selector)) {
-            return {
-                ok: false,
-                reason: `Selector blocked by sandbox: ${selector}`,
-                limits,
-            };
-        }
-    }
-
-    if (limits.maxValuePerRun > 0n && action.value > limits.maxValuePerRun) {
-        return {
-            ok: false,
-            reason: `Value exceeds maxValuePerRun (${action.value.toString()} > ${limits.maxValuePerRun.toString()})`,
-            limits,
-        };
-    }
-
-    return { ok: true, limits };
-}
-
-function normalizeStrategyInput(
-    input: {
-        tokenId: string | number | bigint;
-        strategyType?: StrategyType;
-        target: string;
-        data?: string;
-        value?: string | number | bigint;
-        strategyParams?: Record<string, unknown>;
-        minIntervalMs?: number;
-        requirePositiveBalance?: boolean;
-        maxFailures?: number;
-        enabled?: boolean;
-    },
-    source: string
-): StrategyInputNormalized {
-    return {
-        tokenId: BigInt(input.tokenId),
-        strategyType: input.strategyType ?? "fixed_action",
-        target: input.target,
-        data: (input.data ?? "0x") as `0x${string}`,
-        value: BigInt(input.value ?? 0),
-        strategyParams: input.strategyParams ?? {},
-        minIntervalMs: input.minIntervalMs ?? config.minActionIntervalMs,
-        requirePositiveBalance: input.requirePositiveBalance ?? config.requirePositiveBalance,
-        maxFailures: input.maxFailures ?? Math.max(1, config.strategyMaxFailuresDefault),
-        enabled: input.enabled ?? true,
-        source,
-    };
-}
-
-function toObjectRecord(value: unknown): Record<string, unknown> {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return {};
-    }
-    return value as Record<string, unknown>;
-}
-
-function inferManifestStrategyType(pack: ManifestCapabilityPack): StrategyType {
-    const explicit = pack.runner?.strategyType;
-    if (explicit) return explicit;
-
-    const raw = (pack.runner?.strategyId ?? pack.strategyId ?? "").toLowerCase();
-    if (raw.includes("llm")) return "llm_trader";
-    if (raw.includes("base_trader")) return "llm_trader";
-    if (raw.includes("manual")) return "manual_swap";
-    if (raw.includes("hotpump") || raw.includes("watchlist")) return "hotpump_watchlist";
-    if (raw.includes("wrap")) return "wrap_native";
-    if (raw.includes("composite")) return "composite";
-    return "llm_trader";
-}
-
-function pickManifestContracts(
-    pack: ManifestCapabilityPack
-): Record<string, string> {
-    const networks = pack.networks ?? [];
-    const exactMatch = networks.find((network) => network.chainId === config.chainId);
-    if (exactMatch?.contracts) return exactMatch.contracts;
-    return networks[0]?.contracts ?? {};
-}
-
-function resolveManifestTokenIds(
-    payloadTokenIds: Array<string | number | bigint> | undefined
-): bigint[] {
-    if (payloadTokenIds && payloadTokenIds.length > 0) {
-        return payloadTokenIds.map((item) => BigInt(item));
-    }
-    if (allowedTokenIdSet.size === 1) {
-        return [BigInt([...allowedTokenIdSet][0])];
-    }
-    throw new Error(
-        "Manifest pack requires tokenIds when runner allows multiple token IDs"
-    );
-}
-
-function normalizeStrategiesFromPack(
-    pack: CapabilityPack,
-    payloadTokenIds: Array<string | number | bigint> | undefined,
-    sourceLabel: string
-): StrategyInputNormalized[] {
-    if (pack.kind === "strategy_pack") {
-        return pack.strategies.map((item) => normalizeStrategyInput(item, sourceLabel));
-    }
-
-    const tokenIds = resolveManifestTokenIds(payloadTokenIds);
-    const strategyType = inferManifestStrategyType(pack);
-    const defaults = toObjectRecord(pack.runner?.defaults);
-    const contracts = pickManifestContracts(pack);
-    const target =
-        typeof defaults.target === "string"
-            ? defaults.target
-            : typeof contracts.Router === "string"
-                ? contracts.Router
-                : ZERO_ADDR;
-    const strategyParams = { ...defaults };
-    delete strategyParams.target;
-    delete strategyParams.data;
-    delete strategyParams.value;
-    delete strategyParams.minIntervalMs;
-    delete strategyParams.requirePositiveBalance;
-    delete strategyParams.maxFailures;
-    delete strategyParams.enabled;
-
-    if (strategyType === "llm_trader" && !("toolAllowList" in strategyParams) && pack.toolAllowList) {
-        strategyParams.toolAllowList = pack.toolAllowList;
-    }
-    if (strategyType === "llm_trader" && !("systemPromptOverride" in strategyParams)) {
-        const prompt = pack.llmProfile?.systemPromptOverride;
-        if (typeof prompt === "string" && prompt.trim()) {
-            strategyParams.systemPromptOverride = prompt;
-        }
-    }
-
-    const minIntervalMs =
-        typeof pack.runner?.tickSec === "number" && pack.runner.tickSec > 0
-            ? pack.runner.tickSec * 1000
-            : parseIntUnknown(defaults.minIntervalMs, config.minActionIntervalMs);
-    const requirePositiveBalance =
-        typeof defaults.requirePositiveBalance === "boolean"
-            ? defaults.requirePositiveBalance
-            : config.requirePositiveBalance;
-    const maxFailures = Math.max(
-        1,
-        parseIntUnknown(defaults.maxFailures, config.strategyMaxFailuresDefault)
-    );
-    const enabled = typeof defaults.enabled === "boolean" ? defaults.enabled : true;
-
-    return tokenIds.map((tokenId) =>
-        normalizeStrategyInput(
-            {
-                tokenId,
-                strategyType,
-                target,
-                data: typeof defaults.data === "string" ? defaults.data : "0x",
-                value: parseBigintUnknown(defaults.value, 0n),
-                strategyParams,
-                minIntervalMs,
-                requirePositiveBalance,
-                maxFailures,
-                enabled,
-            },
-            sourceLabel
-        )
-    );
-}
 
 function isTokenAllowed(tokenId: bigint): boolean {
     return allowedTokenIdSet.has(tokenId.toString());
@@ -490,207 +221,7 @@ function coerceSourceSignalItem(
     });
 }
 
-function parseWatchlistPairs(strategy: StrategyConfigRecord): string[] {
-    const raw = strategy.strategyParams.watchlistPairs;
-    if (!Array.isArray(raw)) return [];
-    return raw
-        .filter(
-            (v): v is string =>
-                typeof v === "string" && /^0x[a-fA-F0-9]{40}$/.test(v.trim())
-        )
-        .map((v) => v.toLowerCase());
-}
 
-async function buildStrategyRuntimeContext(
-    strategy: StrategyConfigRecord
-): Promise<{ nowMs: number; marketSignals: Map<string, MarketSignalRecord> }> {
-    const nowMs = Date.now();
-    if (strategy.strategyType !== "hotpump_watchlist") {
-        return { nowMs, marketSignals: new Map() };
-    }
-
-    const pairs = parseWatchlistPairs(strategy);
-    if (pairs.length === 0) {
-        return { nowMs, marketSignals: new Map() };
-    }
-
-    const signals = await store.listMarketSignals(pairs);
-    const signalMap = new Map<string, MarketSignalRecord>();
-    for (const signal of signals) {
-        signalMap.set(signal.pair.toLowerCase(), signal);
-    }
-
-    return { nowMs, marketSignals: signalMap };
-}
-
-function makeSyntheticObservation(tokenId: bigint): Observation {
-    const nowSec = BigInt(Math.floor(Date.now() / 1000));
-    return {
-        tokenId,
-        agentState: {
-            balance: 1n,
-            status: 0,
-            owner: ZERO_ADDR as Address,
-            logicAddress: ZERO_ADDR as Address,
-            lastActionTimestamp: 0n,
-        },
-        agentAccount: ZERO_ADDR as Address,
-        renter: ZERO_ADDR as Address,
-        renterExpires: 0n,
-        operator: ZERO_ADDR as Address,
-        operatorExpires: 0n,
-        blockNumber: 0n,
-        blockTimestamp: nowSec,
-        timestamp: Date.now(),
-    };
-}
-
-async function resolveExecutionProfile(
-    tokenId: bigint,
-    strategy: StrategyConfigRecord | null,
-    obs?: Observation
-): Promise<ExecutionProfile> {
-    if (strategy) {
-        if (!strategy.enabled) {
-            return {
-                source: "none",
-                minIntervalMs: strategy.minIntervalMs,
-                requirePositiveBalance: strategy.requirePositiveBalance,
-                strategyReason: "strategy disabled",
-            };
-        }
-        if (obs) {
-            const context = await buildStrategyRuntimeContext(strategy);
-            const resolved = await resolveStrategyAction(strategy, obs, context);
-            return {
-                source: "strategy",
-                action: resolved.action,
-                minIntervalMs: strategy.minIntervalMs,
-                requirePositiveBalance: strategy.requirePositiveBalance,
-                strategyReason: resolved.reason,
-            };
-        }
-        return {
-            source: "strategy",
-            minIntervalMs: strategy.minIntervalMs,
-            requirePositiveBalance: strategy.requirePositiveBalance,
-            strategyReason: "strategy loaded",
-        };
-    }
-
-    if (config.autoActionEnabled && tokenId === config.tokenId) {
-        return {
-            source: "global",
-            action: {
-                target: config.autoActionTarget,
-                value: config.autoActionValue,
-                data: config.autoActionData,
-            },
-            minIntervalMs: config.minActionIntervalMs,
-            requirePositiveBalance: config.requirePositiveBalance,
-        };
-    }
-
-    return {
-        source: "none",
-        minIntervalMs: config.minActionIntervalMs,
-        requirePositiveBalance: config.requirePositiveBalance,
-        strategyReason: "no strategy",
-    };
-}
-
-function reason(
-    obs: Observation,
-    profile: ExecutionProfile,
-    strategy: StrategyConfigRecord | null
-): Decision {
-    if (obs.agentState.status !== 0) {
-        return {
-            shouldAct: false,
-            reason: `Agent status is ${obs.agentState.status} (not Active)`,
-        };
-    }
-
-    if (obs.renter.toLowerCase() === ZERO_ADDR) {
-        return { shouldAct: false, reason: "No active renter" };
-    }
-
-    if (obs.operator.toLowerCase() !== chain.account.address.toLowerCase()) {
-        return {
-            shouldAct: false,
-            reason: `Not authorized operator (current: ${obs.operator})`,
-        };
-    }
-
-    if (obs.operatorExpires < obs.blockTimestamp) {
-        return { shouldAct: false, reason: "Operator expired" };
-    }
-
-    if (profile.requirePositiveBalance && obs.agentState.balance === 0n) {
-        return { shouldAct: false, reason: "Agent account balance is zero" };
-    }
-
-    if (profile.source === "none" || !profile.action) {
-        if (strategy && !strategy.enabled) {
-            return {
-                shouldAct: false,
-                reason: `Strategy disabled after failures (${strategy.failureCount}/${strategy.maxFailures})`,
-            };
-        }
-        return {
-            shouldAct: false,
-            reason: `Idle - ${profile.strategyReason ?? "no execution profile"}, balance: ${formatEther(obs.agentState.balance)} BNB`,
-        };
-    }
-
-    if (profile.action.target.toLowerCase() === ZERO_ADDR) {
-        return { shouldAct: false, reason: "Idle - target is not configured" };
-    }
-
-    const nowMs = Number(obs.blockTimestamp) * 1000;
-    const strategyLastRunMs =
-        strategy?.lastRunAt != null ? new Date(strategy.lastRunAt).getTime() : null;
-    if (strategyLastRunMs != null && Number.isFinite(strategyLastRunMs)) {
-        const elapsedMs = nowMs - strategyLastRunMs;
-        if (elapsedMs < profile.minIntervalMs) {
-            const waitMs = profile.minIntervalMs - elapsedMs;
-            return {
-                shouldAct: false,
-                reason: `Cooldown active (${Math.ceil(waitMs / 1000)}s remaining)`,
-            };
-        }
-    } else {
-        const lastActionMs = Number(obs.agentState.lastActionTimestamp) * 1000;
-        if (
-            obs.agentState.lastActionTimestamp > 0n &&
-            nowMs - lastActionMs < profile.minIntervalMs
-        ) {
-            const waitMs = profile.minIntervalMs - (nowMs - lastActionMs);
-            return {
-                shouldAct: false,
-                reason: `Cooldown active (${Math.ceil(waitMs / 1000)}s remaining)`,
-            };
-        }
-    }
-
-    return {
-        shouldAct: true,
-        reason: `Action ready - tokenId: ${obs.tokenId.toString()}, balance: ${formatEther(obs.agentState.balance)} BNB, block: ${obs.blockNumber.toString()}`,
-        action: profile.action,
-    };
-}
-
-function isStateInvalidForAutopilot(reasonText: string): boolean {
-    return (
-        reasonText === "No active renter" ||
-        reasonText.startsWith("Not authorized operator") ||
-        reasonText === "Operator expired"
-    );
-}
-
-function actionHash(target: string, value: bigint, data: string): string {
-    return keccak256(stringToHex(`${target.toLowerCase()}:${value.toString()}:${data.toLowerCase()}`));
-}
 
 function requireApiKey(req: { headers: Record<string, string | string[] | undefined> }): boolean {
     if (!config.apiKey) return true;
@@ -829,7 +360,7 @@ function startApiServer(): void {
                 (url.pathname === "/enable" ||
                     url.pathname === "/disable" ||
                     url.pathname === "/strategy/upsert" ||
-                    url.pathname === "/strategy/load-pack" ||
+
                     url.pathname === "/market/signal" ||
                     url.pathname === "/market/signal/batch" ||
                     url.pathname === "/market/signal/sync")
@@ -912,157 +443,8 @@ function startApiServer(): void {
                 return;
             }
 
-            if (req.method === "POST" && url.pathname === "/strategy/upsert") {
-                const body = await parseBody(req);
-                const payload = parseStrategyUpsertPayload(body);
-                const normalized = normalizeStrategyInput(payload, "api");
-                const tokenId = normalized.tokenId;
+            // V3.0: /strategy/upsert removed (use V3 Agent Blueprints)
 
-                if (!isTokenAllowed(tokenId)) {
-                    writeJson(res, 400, {
-                        error: `tokenId not allowed by runner: ${tokenId.toString()}`,
-                        allowedTokenIds: [...allowedTokenIdSet],
-                    });
-                    return;
-                }
-
-                const strategy = await store.upsertStrategy({
-                    tokenId,
-                    strategyType: normalized.strategyType,
-                    target: normalized.target,
-                    data: normalized.data,
-                    value: normalized.value,
-                    strategyParams: normalized.strategyParams,
-                    source: normalized.source,
-                    minIntervalMs: normalized.minIntervalMs,
-                    requirePositiveBalance: normalized.requirePositiveBalance,
-                    maxFailures: normalized.maxFailures,
-                    enabled: normalized.enabled,
-                });
-
-                writeJson(res, 200, { ok: true, strategy });
-                return;
-            }
-
-            if (req.method === "POST" && url.pathname === "/strategy/load-pack") {
-                const body = await parseBody(req);
-                const payload = parseStrategyLoadPackPayload(body);
-                const filePath = payload.filePath ?? config.capabilityPackPath;
-                if (!payload.pack && !filePath) {
-                    writeJson(res, 400, {
-                        error: "Either pack or filePath is required (or set CAPABILITY_PACK_PATH)",
-                    });
-                    return;
-                }
-
-                const pack = payload.pack
-                    ? parseCapabilityPack(payload.pack)
-                    : await loadCapabilityPackFromFile(filePath as string);
-                const packSourceLabel = payload.pack
-                    ? "pack:inline"
-                    : `pack:${filePath as string}`;
-                const computedHash = sha256Hex(pack.raw);
-                if (payload.hash) {
-                    const expectedHash = payload.hash.toLowerCase().replace(/^0x/, "");
-                    if (computedHash !== expectedHash) {
-                        writeJson(res, 400, {
-                            error: "Capability pack hash mismatch",
-                            expectedHash,
-                            computedHash,
-                        });
-                        return;
-                    }
-                }
-
-                const signatureRequired =
-                    config.capabilityPackRequireSignature || !!payload.signature;
-                const signature = payload.signature;
-                const publicKey = payload.publicKey ?? config.capabilityPackPublicKey;
-                if (signatureRequired) {
-                    if (!signature) {
-                        writeJson(res, 400, {
-                            error: "Capability pack signature is required",
-                        });
-                        return;
-                    }
-                    if (!publicKey) {
-                        writeJson(res, 400, {
-                            error: "Capability pack public key is required",
-                        });
-                        return;
-                    }
-                    const verified = verifyPackSignature({
-                        pack: pack.raw,
-                        signature,
-                        publicKeyPem: publicKey,
-                    });
-                    if (!verified) {
-                        writeJson(res, 400, {
-                            error: "Capability pack signature verification failed",
-                        });
-                        return;
-                    }
-                }
-
-                const dryRun = payload.dryRun ?? false;
-                const applied: string[] = [];
-                const skipped: Array<{ tokenId: string; reason: string }> = [];
-                let normalizedStrategies: StrategyInputNormalized[];
-                try {
-                    normalizedStrategies = normalizeStrategiesFromPack(
-                        pack,
-                        payload.tokenIds,
-                        packSourceLabel
-                    );
-                } catch (err) {
-                    writeJson(res, 400, {
-                        error: err instanceof Error ? err.message : String(err),
-                    });
-                    return;
-                }
-
-                for (const normalized of normalizedStrategies) {
-                    if (!isTokenAllowed(normalized.tokenId)) {
-                        skipped.push({
-                            tokenId: normalized.tokenId.toString(),
-                            reason: "token not in allowlist",
-                        });
-                        continue;
-                    }
-                    if (!dryRun) {
-                        await store.upsertStrategy({
-                            tokenId: normalized.tokenId,
-                            strategyType: normalized.strategyType,
-                            target: normalized.target,
-                            data: normalized.data,
-                            value: normalized.value,
-                            strategyParams: normalized.strategyParams,
-                            source: normalized.source,
-                            minIntervalMs: normalized.minIntervalMs,
-                            requirePositiveBalance: normalized.requirePositiveBalance,
-                            maxFailures: normalized.maxFailures,
-                            enabled: normalized.enabled,
-                        });
-                    }
-                    applied.push(normalized.tokenId.toString());
-                }
-
-                writeJson(res, 200, {
-                    ok: true,
-                    dryRun,
-                    filePath,
-                    packKind: pack.kind,
-                    packName: pack.name ?? (pack.kind === "manifest_pack" ? pack.id : undefined),
-                    packVersion: pack.version ?? null,
-                    schemaVersion: pack.kind === "manifest_pack" ? (pack.schemaVersion ?? null) : null,
-                    packHash: computedHash,
-                    appliedCount: applied.length,
-                    skippedCount: skipped.length,
-                    appliedTokenIds: applied,
-                    skipped,
-                });
-                return;
-            }
 
             if (req.method === "POST" && url.pathname === "/market/signal") {
                 const body = await parseBody(req);
@@ -1207,44 +589,9 @@ function startApiServer(): void {
                 return;
             }
 
-            if (req.method === "GET" && url.pathname === "/strategy/supported") {
-                writeJson(res, 200, { ok: true, items: listSupportedStrategies() });
-                return;
-            }
+            // V3.0: /strategy/supported + /strategy/evaluate removed
+            //       (Use V3 Agent Blueprints + /v3/admin/* routes instead)
 
-            if (req.method === "GET" && url.pathname === "/strategy/evaluate") {
-                const query = parseStrategyQuery({
-                    tokenId: url.searchParams.get("tokenId") ?? undefined,
-                });
-                if (query.tokenId == null) {
-                    writeJson(res, 400, { error: "tokenId is required" });
-                    return;
-                }
-                const tokenId = BigInt(query.tokenId);
-                const strategy = await store.getStrategy(tokenId);
-                if (!strategy) {
-                    writeJson(res, 404, {
-                        error: `strategy not found for tokenId ${tokenId.toString()}`,
-                    });
-                    return;
-                }
-
-                const context = await buildStrategyRuntimeContext(strategy);
-                const syntheticObs = makeSyntheticObservation(tokenId);
-                const resolved = await resolveStrategyAction(strategy, syntheticObs, context);
-
-                writeJson(res, 200, {
-                    ok: true,
-                    tokenId: tokenId.toString(),
-                    strategyType: strategy.strategyType,
-                    enabled: strategy.enabled,
-                    marketSignalCount: context.marketSignals.size,
-                    matched: !!resolved.action,
-                    reason: resolved.reason,
-                    action: resolved.action ?? null,
-                });
-                return;
-            }
 
             // ── V2.1: Agent Dashboard + Activity ───────────────────
 
@@ -1334,99 +681,15 @@ function startApiServer(): void {
                 return;
             }
 
-            if (req.method === "GET" && url.pathname === "/byor/schema") {
-                const schema = formatByorSchemaResponse({
-                    chainId: config.chainId,
-                    agentNfaAddress: config.agentNfaAddress,
-                    runnerOperator: chain.account.address,
-                });
-                writeJson(res, 200, { ok: true, schema });
-                return;
-            }
+            // V3.0: /byor/schema + /byor/submit removed (BYOR deprecated)
 
-            if (req.method === "POST" && url.pathname === "/byor/submit") {
-                if (!requireApiKey(req)) {
-                    writeJson(res, 401, { error: "unauthorized" });
-                    return;
-                }
-
-                const body = await parseBody(req);
-                const validation = validateByorSubmission(body);
-                if (!validation.valid || !validation.action) {
-                    writeJson(res, 400, { error: validation.reason ?? "invalid submission" });
-                    return;
-                }
-
-                const tokenId = BigInt((body as Record<string, unknown>).tokenId as string | number);
-                if (!isTokenAllowed(tokenId)) {
-                    writeJson(res, 400, {
-                        error: `tokenId not allowed by runner: ${tokenId.toString()}`,
-                        allowedTokenIds: [...allowedTokenIdSet],
-                    });
-                    return;
-                }
-
-                const strategy = await store.getStrategy(tokenId);
-                const sandbox = checkByorSandbox(strategy, validation.action);
-                if (!sandbox.ok) {
-                    writeJson(res, 403, {
-                        error: sandbox.reason ?? "blocked by strategy sandbox",
-                    });
-                    return;
-                }
-
-                const dryRun = !!(body as Record<string, unknown>).dryRun;
-                if (dryRun) {
-                    writeJson(res, 200, {
-                        ok: true,
-                        dryRun: true,
-                        tokenId: tokenId.toString(),
-                        action: {
-                            target: validation.action.target,
-                            value: validation.action.value.toString(),
-                            data: validation.action.data,
-                        },
-                        sandboxOk: true,
-                    });
-                    return;
-                }
-
-                // Execute via on-chain
-                const hash = actionHash(
-                    validation.action.target,
-                    validation.action.value,
-                    validation.action.data
-                );
-                try {
-                    const result = await chain.executeAction(tokenId, validation.action);
-                    await store.recordRun({
-                        tokenId: tokenId.toString(),
-                        actionType: "byor",
-                        actionHash: hash,
-                        simulateOk: true,
-                        txHash: result.hash,
-                    });
-                    log.info(`[BYOR][${tokenId.toString()}] executed TX ${result.hash}`);
-                    writeJson(res, 200, {
-                        ok: true,
-                        tokenId: tokenId.toString(),
-                        txHash: result.hash,
-                        receiptStatus: result.receiptStatus,
-                        receiptBlock: result.receiptBlock,
-                    });
-                } catch (err) {
-                    const message = err instanceof Error ? err.message : String(err);
-                    await store.recordRun({
-                        tokenId: tokenId.toString(),
-                        actionType: "byor",
-                        actionHash: hash,
-                        simulateOk: false,
-                        error: message,
-                    });
-                    writeJson(res, 500, { error: `execution failed: ${message}` });
-                }
-                return;
-            }
+            // ─── V3.0 Modular Routes ───
+            const v3Handled = await handleV3Routes(req.method!, url.pathname, req, res, {
+                pool: store.getPool(),
+                chainId: config.chainId,
+                requireAuth: (r) => requireApiKey(r),
+            });
+            if (v3Handled) return;
 
             writeJson(res, 404, { error: "not found" });
         } catch (err) {
@@ -1455,17 +718,16 @@ function startApiServer(): void {
     });
 }
 
+// ═══════════════════════════════════════════════════════
+//   V3 Agent Runtime Loop (replaces V1 runLoop)
+// ═══════════════════════════════════════════════════════
+
 async function runLoop(): Promise<void> {
-    log.info("=== SHLL Agent Runner ===");
+    log.info("=== SHLL Agent Runner (V3.0) ===");
     log.info(`Operator: ${chain.account.address}`);
     log.info(`Agent NFA: ${config.agentNfaAddress}`);
-    log.info(`Default token ID: ${config.tokenId.toString()}`);
     log.info(`Allowed token IDs: ${[...allowedTokenIdSet].join(", ")}`);
     log.info(`Poll interval: ${config.pollIntervalMs}ms`);
-    log.info(`Auto action: ${config.autoActionEnabled ? "enabled" : "disabled"}`);
-    log.info(
-        `Market signal sync: ${config.marketSignalSyncEnabled ? "enabled" : "disabled"}`
-    );
     log.info(
         `Store backend: postgres (${config.databaseUrl ? "DATABASE_URL" : `${config.pgHost}:${config.pgPort}/${config.pgDatabase}`})`
     );
@@ -1476,6 +738,8 @@ async function runLoop(): Promise<void> {
     while (true) {
         try {
             lastLoopAt = Date.now();
+
+            // Collect enabled token IDs from DB
             const tokenSet = new Set<string>();
             for (const tokenId of await store.listEnabledTokenIds()) {
                 tokenSet.add(tokenId.toString());
@@ -1485,13 +749,12 @@ async function runLoop(): Promise<void> {
             }
 
             if (tokenSet.size === 0) {
-                log.info("[Tick] idle - no enabled autopilot token");
+                log.info("[Tick] idle — no enabled autopilot token");
             }
 
             for (const tokenIdRaw of tokenSet) {
                 const tokenId = BigInt(tokenIdRaw);
                 const autopilot = await store.getAutopilot(tokenId);
-                const strategy = await store.getStrategy(tokenId);
                 let acquiredDbLock = false;
 
                 if (autopilot?.enabled) {
@@ -1499,160 +762,87 @@ async function runLoop(): Promise<void> {
                         tokenId,
                         config.tokenLockLeaseMs
                     );
-                    if (!acquiredDbLock) {
-                        continue;
-                    }
+                    if (!acquiredDbLock) continue;
                 }
 
-                // V1.4: Resolve cached instance config (shared between try/catch)
-                const tokenKey = tokenId.toString();
-                const cachedConfig = instanceConfigCache.get(tokenKey);
-
-                // V1.4: Capture agentAccount for preValidate in catch block
-                let lastObsAgentAccount: `0x${string}` | undefined;
-                let lastAction: import("./types.js").ActionPayload | undefined;
-
                 try {
-                    const obs = await chain.observe(tokenId);
-                    lastObsAgentAccount = obs.agentAccount;
-
-                    // V1.4: Read and cache instance config on first encounter
-                    if (!instanceConfigCache.has(tokenKey)) {
-                        const icfg = await chain.readInstanceConfig(tokenId);
-                        if (icfg) {
-                            instanceConfigCache.set(tokenKey, icfg);
-                            log.info(
-                                `[V1.4][${tokenKey}] instanceConfig loaded: policyId=${icfg.policyId}, slippage=${icfg.slippageBps}bps, riskTier=${icfg.riskTier}`
-                            );
-                        }
-                    }
-                    const resolvedConfig = instanceConfigCache.get(tokenKey);
-                    if (resolvedConfig) {
-                        obs.instanceConfig = resolvedConfig;
-                    }
-
-                    const profile = await resolveExecutionProfile(tokenId, strategy, obs);
-                    const decision = reason(obs, profile, strategy);
-                    log.info(`[Tick][${tokenId.toString()}] ${decision.reason}`);
-
-                    if (!decision.shouldAct) {
-                        if (autopilot?.enabled && isStateInvalidForAutopilot(decision.reason)) {
-                            await store.disable(tokenId, decision.reason);
-                        }
-                        continue;
-                    }
-
-                    if (!decision.action) {
-                        continue;
-                    }
-
-                    if (strategy) {
-                        const sandbox = enforceStrategySandbox(strategy, decision.action);
-                        let limits: StrategyRiskLimits;
-                        if (!sandbox.ok) {
-                            log.error(`[Tick][${tokenId.toString()}] ${sandbox.reason}`);
-                            await store.recordRun({
-                                tokenId: tokenId.toString(),
-                                actionType: "auto",
-                                actionHash: actionHash(
-                                    decision.action.target,
-                                    decision.action.value,
-                                    decision.action.data
-                                ),
-                                simulateOk: false,
-                                error: sandbox.reason,
-                            });
-                            continue;
-                        }
-                        limits = sandbox.limits;
-
-                        const budgetCheck = await store.checkStrategyBudget({
+                    // Ensure agent is started in the manager
+                    if (!agentManager.isActive(tokenId)) {
+                        // Read on-chain data to create agent
+                        const obs = await chain.observe(tokenId);
+                        agentManager.startAgent({
                             tokenId,
-                            nextValue: decision.action.value,
-                            maxRunsPerDay: limits.maxRunsPerDay,
-                            maxValuePerDay: limits.maxValuePerDay,
+                            agentType: "rule:dca",  // TODO: read from chain/DB
+                            owner: obs.agentState.owner,
+                            renter: obs.renter,
+                            vault: obs.agentAccount,
+                            strategyParams: (await store.getStrategy(tokenId))?.strategyParams,
                         });
-                        if (!budgetCheck.ok) {
-                            log.info(
-                                `[Tick][${tokenId.toString()}] budget gate: ${budgetCheck.reason}`
-                            );
-                            continue;
-                        }
+                        log.info(`[V3] Agent ${tokenId.toString()} started`);
                     }
 
-                    lastAction = decision.action;
-                    const hash = actionHash(
-                        decision.action.target,
-                        decision.action.value,
-                        decision.action.data
-                    );
-                    const result = await chain.executeAction(tokenId, decision.action);
-                    await store.recordRun({
-                        tokenId: tokenId.toString(),
-                        actionType: "auto",
-                        actionHash: hash,
-                        simulateOk: true,
-                        txHash: result.hash,
-                        paramsHash: resolvedConfig?.paramsHash ?? cachedConfig?.paramsHash,
-                    });
-                    await store.recordStrategySuccess(tokenId);
-                    if (strategy) {
-                        await store.consumeStrategyBudget(tokenId, decision.action.value);
-                    }
+                    const agent = agentManager.getAgent(tokenId);
+                    if (!agent) continue;
+
+                    // Run one cognitive cycle
+                    const result = await runAgentCycle(agent);
                     log.info(
-                        `[Act][${tokenId.toString()}] TX confirmed in block ${result.receiptBlock}, status: ${result.receiptStatus}`
+                        `[V3][${tokenId.toString()}] ${result.action}: ${result.reasoning}${result.blocked ? ` [BLOCKED: ${result.blockReason}]` : ""}`
                     );
+
+                    // If the runtime produced a payload, submit it on-chain
+                    if (result.acted && result.payload && !result.blocked) {
+                        const txResult = await chain.executeAction(tokenId, result.payload);
+                        log.info(
+                            `[V3][${tokenId.toString()}] TX confirmed block=${txResult.receiptBlock} status=${txResult.receiptStatus}`
+                        );
+
+                        // Record execution in agent memory
+                        await recordExecution(
+                            agent,
+                            result.action,
+                            result.params ?? {},
+                            result.reasoning,
+                            { success: true, txHash: txResult.hash },
+                        );
+
+                        // Record in legacy run history for dashboard
+                        const hash = keccak256(
+                            stringToHex(
+                                `${result.payload.target.toLowerCase()}:${result.payload.value.toString()}:${result.payload.data.toLowerCase()}`
+                            )
+                        );
+                        await store.recordRun({
+                            tokenId: tokenId.toString(),
+                            actionType: "auto",
+                            actionHash: hash,
+                            simulateOk: true,
+                            txHash: txResult.hash,
+                        });
+                    }
                 } catch (err) {
                     const message = err instanceof Error ? err.message : String(err);
-                    log.error(`[Tick][${tokenId.toString()}] execution failed:`, message);
-                    const failTarget = strategy?.target ?? config.autoActionTarget;
-                    const failValue = strategy ? BigInt(strategy.value) : config.autoActionValue;
-                    const failData = strategy?.data ?? config.autoActionData;
+                    log.error(`[V3][${tokenId.toString()}] error:`, message);
 
-                    // V1.4 C-1: Pre-validate for error attribution
-                    let failureCategory: string | undefined;
-                    if (lastObsAgentAccount && lastAction) {
-                        try {
-                            const pv = await chain.preValidate(
-                                tokenId,
-                                lastObsAgentAccount,
-                                lastAction
-                            );
-                            if (!pv.ok) {
-                                failureCategory = pv.reason;
-                                log.info(
-                                    `[V1.4][${tokenId.toString()}] preValidate attribution: ${pv.reason}`
-                                );
-                            }
-                        } catch (pvErr) {
-                            log.error(
-                                `[V1.4][${tokenId.toString()}] preValidate call failed:`,
-                                pvErr instanceof Error ? pvErr.message : pvErr
-                            );
-                        }
+                    // Record failure in agent memory if agent exists
+                    const agent = agentManager.getAgent(tokenId);
+                    if (agent) {
+                        await recordExecution(
+                            agent,
+                            "unknown",
+                            {},
+                            "cycle error",
+                            { success: false, error: message },
+                        );
                     }
 
                     await store.recordRun({
                         tokenId: tokenId.toString(),
                         actionType: "auto",
-                        actionHash: actionHash(failTarget, failValue, failData),
+                        actionHash: "0x00",
                         simulateOk: false,
                         error: message,
-                        paramsHash: cachedConfig?.paramsHash,
-                        failureCategory,
                     });
-                    const updated = await store.recordStrategyFailure(tokenId, message);
-                    if (updated && !updated.enabled) {
-                        if (autopilot?.enabled) {
-                            await store.disable(
-                                tokenId,
-                                `strategy failure threshold reached (${updated.failureCount}/${updated.maxFailures})`
-                            );
-                        }
-                        log.error(
-                            `[Tick][${tokenId.toString()}] strategy disabled after failures (${updated.failureCount}/${updated.maxFailures})`
-                        );
-                    }
                 } finally {
                     if (acquiredDbLock) {
                         await store.releaseAutopilotLock(tokenId);
@@ -1679,20 +869,37 @@ async function runLoop(): Promise<void> {
     }
 }
 
+// ═══════════════════════════════════════════════════════
+//                   Main
+// ═══════════════════════════════════════════════════════
+
 async function main(): Promise<void> {
     await store.init();
+
+    // Bootstrap V3 Agent Runtime modules
+    bootstrapAgentModules({
+        pool: store.getPool(),
+        publicClient: chain.publicClient,
+        chainId: config.chainId,
+        agentNfaAddress: config.agentNfaAddress as `0x${string}`,
+        agentNfaAbi: AgentNFAAbi,
+        policyGuardV4Address: (config as any).policyGuardV4Address ?? ZERO_ADDR as `0x${string}`,
+        operatorAddress: chain.account.address,
+        wbnbAddress: (config as any).wbnbAddress ?? ZERO_ADDR as `0x${string}`,
+    });
+    log.info("[V3] Agent modules bootstrapped");
+
     const shutdown = async () => {
         log.info("Shutting down runner...");
+        agentManager.stopAll();
         await store.close();
         process.exit(0);
     };
-    process.on("SIGINT", () => {
-        void shutdown();
-    });
-    process.on("SIGTERM", () => {
-        void shutdown();
-    });
+    process.on("SIGINT", () => { void shutdown(); });
+    process.on("SIGTERM", () => { void shutdown(); });
+
     startApiServer();
+
     if (config.marketSignalSyncEnabled) {
         if (!config.marketSignalSourceUrl) {
             log.error(
@@ -1702,6 +909,7 @@ async function main(): Promise<void> {
             void runMarketSignalSyncLoop();
         }
     }
+
     await runLoop();
 }
 
@@ -1709,3 +917,4 @@ main().catch((err) => {
     console.error("Fatal error:", err);
     process.exit(1);
 });
+

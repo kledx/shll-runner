@@ -176,6 +176,11 @@ export class RunnerStore {
         this.pool = new Pool(poolConfig);
     }
 
+    /** Expose the internal Pool for V3.0 API routes. */
+    getPool(): Pool {
+        return this.pool;
+    }
+
     async init(): Promise<void> {
         await this.pool.query(`
             CREATE TABLE IF NOT EXISTS autopilots (
