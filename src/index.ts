@@ -50,12 +50,7 @@ async function main(): Promise<void> {
     log.info("[V3] Agent modules bootstrapped");
 
     const agentManager = new AgentManager();
-    const allowedTokenIdSet = new Set<string>(
-        (config.allowedTokenIds.length > 0
-            ? config.allowedTokenIds
-            : [config.tokenId]
-        ).map((v) => v.toString()),
-    );
+
 
     const shutdown = async () => {
         log.info("Shutting down runner...");
@@ -66,7 +61,7 @@ async function main(): Promise<void> {
     process.on("SIGINT", () => { void shutdown(); });
     process.on("SIGTERM", () => { void shutdown(); });
 
-    startApiServer({ store, chain, config, allowedTokenIdSet, agentManager, log });
+    startApiServer({ store, chain, config, agentManager, log });
 
     if (config.marketSignalSyncEnabled && config.marketSignalSourceUrl) {
         void runMarketSignalSyncLoop({ store, config, log });

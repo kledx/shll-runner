@@ -72,7 +72,6 @@ export const config = {
 
     // Default token
     tokenId: BigInt(optionalAny(["TOKEN_ID"], "0")),
-    allowedTokenIds: optionalBigIntList("ALLOWED_TOKEN_IDS"),
 
     // Runtime
     pollIntervalMs: parseInt(optionalAny(["POLL_INTERVAL_MS"], "30000"), 10),

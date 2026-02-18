@@ -65,7 +65,7 @@ export interface ApiServerContext {
     store: RunnerStore;
     chain: ChainServices;
     config: ApiServerConfig;
-    allowedTokenIdSet: Set<string>;
+    // allowedTokenIdSet removed — V3 uses permit signatures for auth
     agentManager: AgentManager;
     log: Logger;
 }
@@ -74,9 +74,7 @@ export interface ApiServerContext {
 //                  Helpers
 // ═══════════════════════════════════════════════════════
 
-function isTokenAllowed(tokenId: bigint, allowedSet: Set<string>): boolean {
-    return allowedSet.size === 0 || allowedSet.has(tokenId.toString());
-}
+
 
 function requireApiKey(
     req: import("node:http").IncomingMessage,
@@ -92,7 +90,7 @@ function requireApiKey(
 // ═══════════════════════════════════════════════════════
 
 export function startApiServer(ctx: ApiServerContext): void {
-    const { store, chain, config, allowedTokenIdSet, log } = ctx;
+    const { store, chain, config, log } = ctx;
 
     const server = createServer(async (req, res) => {
         try {
@@ -153,13 +151,7 @@ export function startApiServer(ctx: ApiServerContext): void {
                     return;
                 }
 
-                if (!isTokenAllowed(permit.tokenId, allowedTokenIdSet)) {
-                    writeJson(res, 400, {
-                        error: `tokenId not allowed by runner: ${permit.tokenId.toString()}`,
-                        allowedTokenIds: [...allowedTokenIdSet],
-                    });
-                    return;
-                }
+
 
                 if (
                     permit.operator.toLowerCase() !==
@@ -511,7 +503,6 @@ export function startApiServer(ctx: ApiServerContext): void {
                     ok: true,
                     chainId: config.chainId,
                     runnerOperator: chain.account.address,
-                    allowedTokenIds: [...allowedTokenIdSet],
                     autopilots: await store.listAutopilots(),
                     strategies: await store.listStrategies(),
                 });
