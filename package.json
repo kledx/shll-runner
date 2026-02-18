@@ -11,7 +11,9 @@
         "smoke:pack-load": "powershell -ExecutionPolicy Bypass -File scripts/p4-pack-load-smoke.ps1"
     },
     "dependencies": {
+        "@ai-sdk/openai": "^3.0.29",
         "@types/pg": "^8.16.0",
+        "ai": "^6.0.90",
         "dotenv": "^17.3.1",
         "pg": "^8.18.0",
         "viem": "^2.0.0",

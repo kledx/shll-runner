@@ -21,7 +21,6 @@ import { PgMemory } from "./memory/pg.js";
 import { DCABrain, type DCABrainConfig } from "./brain/rule/dca.js";
 import { HotTokenBrain, type HotTokenBrainConfig } from "./brain/rule/hotToken.js";
 import { LLMBrain } from "./brain/llm/agent.js";
-import { createLLMProvider } from "./brain/llm/provider.js";
 import { createSwapAction } from "./actions/swap.js";
 import { createApproveAction } from "./actions/approve.js";
 import { createWrapAction } from "./actions/wrap.js";
@@ -94,18 +93,12 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
         return new HotTokenBrain(htConfig);
     });
 
-    // ── Brain: LLM-based ───────────────────────────────
+    // ── Brain: LLM-based (Vercel AI SDK) ────────────────
     registerBrain("llm", (ctx: BrainFactoryContext) => {
         const llmConfig = ctx.llmConfig;
         if (!llmConfig) {
             throw new Error("LLM brain requires llmConfig from blueprint");
         }
-
-        // Env vars override blueprint defaults — allows any OpenAI-compatible provider
-        const provider = process.env.LLM_PROVIDER || llmConfig.provider;
-        const model = process.env.LLM_MODEL || llmConfig.model;
-        const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || llmConfig.apiKey || "";
-        const endpoint = process.env.LLM_BASE_URL || llmConfig.endpoint; // undefined → use PROVIDER_ENDPOINTS lookup
 
         // Merge user-defined trading goal from strategyParams into prompt
         let systemPrompt = llmConfig.systemPrompt;
@@ -117,18 +110,17 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
             systemPrompt += `\n\n## Tokens to Watch\n${(sp.watchTokens as string[]).join(", ")}`;
         }
 
-        const mergedConfig = { ...llmConfig, systemPrompt };
-        const llmProvider = createLLMProvider(
-            provider,
-            apiKey,
-            model,
-            {
-                endpoint,
-                maxTokens: Number(process.env.LLM_MAX_TOKENS) || llmConfig.maxStepsPerRun || 2048,
-                timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || 30_000,
-            },
-        );
-        return new LLMBrain(mergedConfig, llmProvider);
+        // Env vars override blueprint defaults
+        const mergedConfig = {
+            ...llmConfig,
+            systemPrompt,
+            provider: process.env.LLM_PROVIDER || llmConfig.provider,
+            model: process.env.LLM_MODEL || llmConfig.model,
+            apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || llmConfig.apiKey,
+            maxStepsPerRun: Number(process.env.LLM_MAX_STEPS) || llmConfig.maxStepsPerRun || 3,
+        };
+
+        return new LLMBrain(mergedConfig);
     });
 
     // ── Actions ────────────────────────────────────────
