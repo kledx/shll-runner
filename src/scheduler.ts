@@ -94,9 +94,12 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
                     // Ensure agent is started in the manager
                     if (!agentManager.isActive(tokenId)) {
                         const obs = await chain.observe(tokenId);
-                        // V3: read agentType from chain (bytes32 → string)
-                        const agentType = await chain.readAgentType(tokenId) || "dca";
+                        // V3: read agentType from chain, fall back to strategy DB
+                        const chainType = await chain.readAgentType(tokenId);
                         const strategy = await store.getStrategy(tokenId);
+                        const agentType = (chainType && chainType !== "unknown")
+                            ? chainType
+                            : (strategy?.strategyType || "dca");
                         agentManager.startAgent({
                             tokenId,
                             agentType,

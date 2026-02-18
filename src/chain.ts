@@ -8,8 +8,9 @@
 import {
     createPublicClient,
     createWalletClient,
-    hexToString,
     http,
+    keccak256,
+    toHex,
     type Address,
     type Hex,
 } from "viem";
@@ -277,6 +278,13 @@ export function createChainServices(config: ChainConfig): ChainServices {
         };
     }
 
+    // keccak256 hash → agent type string lookup
+    // Must match AgentNFA.sol TYPE_DCA, TYPE_LLM_TRADER, etc.
+    const KNOWN_TYPES = ["dca", "llm_trader", "hot_token", "llm_defi"];
+    const AGENT_TYPE_MAP: Record<string, string> = Object.fromEntries(
+        KNOWN_TYPES.map((t) => [keccak256(toHex(t)), t]),
+    );
+
     async function readAgentType(tokenId: bigint): Promise<string> {
         const raw = await publicClient.readContract({
             address: config.agentNfaAddress,
@@ -284,8 +292,8 @@ export function createChainServices(config: ChainConfig): ChainServices {
             functionName: "agentType",
             args: [tokenId],
         });
-        // bytes32 → string, trim trailing null bytes
-        return hexToString(raw as `0x${string}`, { size: 32 }).replace(/\0+$/, "");
+        const hex = (raw as string).toLowerCase();
+        return AGENT_TYPE_MAP[hex] ?? "unknown";
     }
 
     return {

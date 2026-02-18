@@ -1,0 +1,50 @@
+# Local development compose — builds from source, includes PostgreSQL
+# Usage: docker compose -f docker-compose.local.yml up --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: shll-runner-postgres
+    environment:
+      POSTGRES_USER: shll_runner
+      POSTGRES_PASSWORD: f6ybTkUhxuB
+      POSTGRES_DB: shll_runner
+    ports:
+      - "5433:5432" # Expose on 5433 to avoid conflicts with host PG
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U shll_runner" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  agent-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shll-agent-runner
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Override DB to point to compose postgres service
+      DATABASE_URL: ""
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: shll_runner
+      PGPASSWORD: f6ybTkUhxuB
+      PGDATABASE: shll_runner
+      PG_SSL: "false"
+    ports:
+      - "${API_PORT:-8787}:${API_PORT:-8787}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
