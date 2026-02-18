@@ -36,18 +36,18 @@ const AGENT_BLUEPRINTS: Record<string, AgentBlueprint> = {
     },
     llm_trader: {
         brain: "llm",
-        actions: ["swap", "approve", "analytics", "portfolio"],
+        actions: ["swap", "approve", "wrap", "analytics", "portfolio"],
         perception: "defi",
         llmConfig: {
             systemPrompt: "You are a DeFi trading agent. Analyze market data and vault positions to make profitable trades. Be conservative and prioritize capital preservation.",
             provider: "openai",
             model: "gpt-4o-mini",
-            maxStepsPerRun: 3,
+            maxStepsPerRun: 5,
         },
     },
     llm_defi: {
         brain: "llm",
-        actions: ["swap", "approve", "analytics", "portfolio"],
+        actions: ["swap", "approve", "wrap", "analytics", "portfolio"],
         perception: "defi",
         llmConfig: {
             systemPrompt: "You are an advanced DeFi agent capable of multi-step strategies. Analyze positions, market trends, and optimize yield across protocols.",

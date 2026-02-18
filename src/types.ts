@@ -154,6 +154,7 @@ export interface StrategyConfigRecord {
     enabled: boolean;
     lastRunAt?: string;
     lastError?: string;
+    nextCheckAt?: string;
     createdAt: string;
     updatedAt: string;
 }

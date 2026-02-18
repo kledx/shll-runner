@@ -37,6 +37,10 @@ export interface RunResult {
     blocked: boolean;
     /** Block reason if blocked */
     blockReason?: string;
+    /** LLM signals task is complete — scheduler should disable autopilot */
+    done?: boolean;
+    /** LLM-suggested ms until next check */
+    nextCheckMs?: number;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -92,6 +96,8 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             action: "wait",
             reasoning: decision.reasoning,
             blocked: false,
+            done: decision.done,
+            nextCheckMs: decision.nextCheckMs,
         };
     }
 
@@ -127,6 +133,8 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             action: decision.action,
             reasoning: decision.reasoning,
             blocked: false,
+            done: decision.done,
+            nextCheckMs: decision.nextCheckMs,
         };
     }
 
@@ -162,6 +170,8 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             payload,
             blocked: true,
             blockReason: firstViolation?.message ?? "Policy violation",
+            done: decision.done,
+            nextCheckMs: decision.nextCheckMs,
         };
     }
 
@@ -183,6 +193,8 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
         params: enrichedParams,
         payload,
         blocked: false,
+        done: decision.done,
+        nextCheckMs: decision.nextCheckMs,
     };
 }
 

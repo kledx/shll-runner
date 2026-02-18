@@ -53,6 +53,13 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
         publicClient: config.publicClient,
         agentNfaAddress: config.agentNfaAddress,
         agentNfaAbi: config.agentNfaAbi,
+        trackedTokens: [
+            {
+                address: config.wbnbAddress,
+                symbol: "WBNB",
+                decimals: 18,
+            },
+        ],
     };
 
     // ── Perception ─────────────────────────────────────
@@ -135,6 +142,10 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
         publicClient: config.publicClient,
         policyGuardV4Address: config.policyGuardV4Address,
         operatorAddress: config.operatorAddress,
+        agentNfaAddress: config.agentNfaAddress,
+        // vaultAddress is ignored by validate() (param marked /* agentAccount */)
+        // ReceiverGuardPolicy reads vault from its own agentNFA.accountOf() storage
+        vaultAddress: "0x0000000000000000000000000000000000000000",
     };
 
     registerGuardrails((tokenId) => {

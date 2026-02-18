@@ -24,6 +24,10 @@ export interface Decision {
     reasoning: string;
     /** Confidence score 0-1 (1 = certain, used by guardrails for threshold) */
     confidence: number;
+    /** If true, task is fully complete — scheduler should disable autopilot */
+    done?: boolean;
+    /** Suggested ms until next check (scheduler enforces minIntervalMs floor) */
+    nextCheckMs?: number;
 }
 
 // ═══════════════════════════════════════════════════════

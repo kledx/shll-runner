@@ -44,7 +44,10 @@ export function createWrapAction(wbnbAddress: Address): IAction {
 
         encode(params: Record<string, unknown>): ActionPayload {
             const direction = params.direction as string || "wrap";
-            const amount = BigInt(params.amount as string);
+            // Accept both 'amount' and 'amountIn' (LLM may use swap conventions)
+            const amountRaw = (params.amount ?? params.amountIn) as string | undefined;
+            if (!amountRaw) throw new Error("wrap: missing required param 'amount' (or 'amountIn')");
+            const amount = BigInt(amountRaw);
 
             if (direction === "unwrap") {
                 const data = encodeFunctionData({

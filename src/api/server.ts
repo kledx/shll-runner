@@ -90,7 +90,7 @@ function requireApiKey(
 // ═══════════════════════════════════════════════════════
 
 export function startApiServer(ctx: ApiServerContext): void {
-    const { store, chain, config, log } = ctx;
+    const { store, chain, config, agentManager, log } = ctx;
 
     const server = createServer(async (req, res) => {
         try {
@@ -114,6 +114,7 @@ export function startApiServer(ctx: ApiServerContext): void {
                 (url.pathname === "/enable" ||
                     url.pathname === "/disable" ||
                     url.pathname === "/strategy/upsert" ||
+                    url.pathname === "/strategy/clear-goal" ||
                     url.pathname === "/market/signal" ||
                     url.pathname === "/market/signal/batch" ||
                     url.pathname === "/market/signal/sync")
@@ -228,6 +229,21 @@ export function startApiServer(ctx: ApiServerContext): void {
                     `Strategy upserted: tokenId=${payload.tokenId} type=${payload.strategyType}`,
                 );
                 writeJson(res, 200, { ok: true, strategy: record });
+                return;
+            }
+
+            // ── Strategy Clear Goal (P-2026-018) ──────────────
+            if (req.method === "POST" && url.pathname === "/strategy/clear-goal") {
+                const body = await parseBody(req);
+                const tokenId = BigInt((body as Record<string, string>).tokenId ?? "0");
+                if (!tokenId) {
+                    writeJson(res, 400, { error: "tokenId is required" });
+                    return;
+                }
+                await store.clearTradingGoal(tokenId);
+                agentManager.stopAgent(tokenId);
+                log.info(`[API] Cleared tradingGoal for token ${tokenId.toString()}`);
+                writeJson(res, 200, { ok: true, tokenId: tokenId.toString() });
                 return;
             }
 
@@ -362,6 +378,10 @@ export function startApiServer(ctx: ApiServerContext): void {
                     reason,
                     txHash,
                 );
+                // Stop the in-memory agent instance so the scheduler won't re-run it
+                agentManager.stopAgent(tokenId);
+                await store.releaseAutopilotLock(tokenId);
+                log.info(`[API] Disabled token ${tokenId.toString()} — reason: ${reason}`);
                 writeJson(res, 200, {
                     ok: true,
                     tokenId: record.tokenId,

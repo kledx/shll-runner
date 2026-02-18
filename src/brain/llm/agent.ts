@@ -16,6 +16,7 @@
 
 import { generateText, tool, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createDeepSeek } from "@ai-sdk/deepseek";
 import { z } from "zod";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
 import type { IBrain, Decision } from "../interface.js";
@@ -24,6 +25,20 @@ import type { MemoryEntry } from "../../memory/interface.js";
 import type { IAction } from "../../actions/interface.js";
 import type { LLMConfig } from "../../agent/agent.js";
 import { buildUserPrompt } from "./prompt.js";
+
+// ═══════════════════════════════════════════════════════
+//                   Decision Schema
+// ═══════════════════════════════════════════════════════
+
+/** Zod schema for structured Decision output — sent to LLM as JSON Schema */
+const DecisionSchema = z.object({
+    action: z.string().describe("Action name: 'swap', 'approve', 'wrap', or 'wait'"),
+    params: z.record(z.string(), z.unknown()).describe("Action parameters (tokenIn, tokenOut, amountIn, etc.)"),
+    reasoning: z.string().describe("Brief explanation of why this action was chosen"),
+    confidence: z.number().min(0).max(1).describe("Confidence level 0.0 to 1.0"),
+    done: z.boolean().optional().describe("Set true if the task is fully complete and no further checks are needed"),
+    nextCheckMs: z.number().optional().describe("Suggested milliseconds until next check: 60000=1min, 300000=5min, 3600000=1h, 86400000=1day"),
+});
 
 // ═══════════════════════════════════════════════════════
 //                     LLM Brain
@@ -36,19 +51,28 @@ export class LLMBrain implements IBrain {
         private config: LLMConfig,
         _provider?: unknown, // kept for backward compat signature
     ) {
-        // Create OpenAI-compatible provider via Vercel AI SDK
         const baseURL = process.env.LLM_BASE_URL || this.resolveBaseURL(config.provider);
         const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || config.apiKey || "";
         const modelId = process.env.LLM_MODEL || config.model;
 
-        const provider = createOpenAI({
-            baseURL,
-            apiKey,
-            name: config.provider || "openai",
-        });
+        // Use dedicated @ai-sdk/deepseek provider for DeepSeek models
+        // (handles tool calling format correctly)
+        const isDeepSeek = baseURL.includes("deepseek.com") ||
+            config.provider === "deepseek" ||
+            modelId.includes("deepseek");
 
-        // Use .chat() to force Chat Completions API (not Responses API)
-        this.model = provider.chat(modelId) as unknown as LanguageModelV3;
+        if (isDeepSeek) {
+            const ds = createDeepSeek({ baseURL, apiKey });
+            this.model = ds(modelId) as unknown as LanguageModelV3;
+        } else {
+            const openai = createOpenAI({
+                baseURL,
+                apiKey,
+                name: config.provider || "openai",
+            });
+            // Use .chat() to force Chat Completions API (not Responses API)
+            this.model = openai.chat(modelId) as unknown as LanguageModelV3;
+        }
     }
 
     async think(
@@ -112,20 +136,45 @@ export class LLMBrain implements IBrain {
     /** Build system prompt — tools are provided via API, not listed in prompt */
     private buildSystemPrompt(actions: IAction[]): string {
         const writeActions = actions.filter(a => !a.readonly).map(a => a.name);
+        const wbnb = process.env.WBNB_ADDRESS || "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd";
         const parts: string[] = [
             this.config.systemPrompt,
+            "",
+            "## BSC Infrastructure",
+            `- PancakeSwap V2 Router: 0xD99D1c33F9fC3444f8101754aBC46c52416550D1`,
+            `- WBNB: ${wbnb}`,
+            `- Native BNB (for tokenIn): 0x0000000000000000000000000000000000000000`,
+            `- USDT (BSC): 0x55d398326f99059fF775485246999027B3197955`,
+            `- BUSD (BSC): 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56`,
             "",
             "## Instructions",
             "- You have tools available to gather market data and portfolio info.",
             "- Use get_market_data to check token prices BEFORE making trade decisions.",
             "- Use get_portfolio to check your current vault holdings.",
-            "- After gathering data, make your final decision as a JSON response:",
+            "- FIRST use tools to gather data (get_portfolio, get_market_data).",
+            "- THEN output your final decision as a single JSON object:",
             '  { "action": "<name>", "params": { ... }, "reasoning": "<why>", "confidence": 0.0-1.0 }',
             "- Valid actions for final decision: " + writeActions.join(", ") + ", or 'wait'",
+            "- For swap: ALWAYS include router, tokenIn, tokenOut, amountIn (in wei). Use the PancakeSwap V2 Router address above.",
             "- Set action='wait' if no good opportunity exists right now.",
             "- Never exceed user safety limits.",
             "- Prefer capital preservation over risky trades.",
-            "- IMPORTANT: Your final response must be ONLY valid JSON, no markdown or extra text.",
+            "- IMPORTANT: After tool calls, your FINAL response must be ONLY valid JSON. Do NOT call tools in your final response.",
+            "",
+            "## Scheduling Control",
+            "- Set `done: true` when the user's request is FULLY SATISFIED and no further action is needed:",
+            "  - Information queries: 'check my portfolio', 'what is BNB price' → answer the question, then done: true",
+            "  - Single trades: 'swap 0.1 BNB to USDT' → execute, then done: true",
+            "  - Any request that does NOT require ongoing monitoring → done: true",
+            "- Set `done: false` (or omit) for tasks that require ONGOING monitoring or repeated checks:",
+            "  - Conditional orders: 'buy when BNB drops below $300' → wait + nextCheckMs",
+            "  - Recurring tasks: 'DCA 0.01 BNB into USDT every hour' → wait + nextCheckMs",
+            "  - Active trading sessions: 'trade actively for the next hour' → wait + nextCheckMs",
+            "- When waiting, set `nextCheckMs` to suggest re-check interval:",
+            "  - Active trading: 60000 (1 min)",
+            "  - Casual monitoring: 300000 (5 min)",
+            "  - Low-priority: 3600000 (1 hour)",
+            "- IMPORTANT: Most user queries are one-shot. Default to done: true unless the task explicitly requires re-checking.",
         ];
         return parts.join("\n");
     }
@@ -188,27 +237,32 @@ export class LLMBrain implements IBrain {
 
 function parseDecision(response: string): Decision {
     try {
-        // Try to extract JSON from the response (handle markdown code blocks)
         let jsonStr = response.trim();
-        const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (jsonMatch) {
-            jsonStr = jsonMatch[1].trim();
+
+        // 1. Try to extract JSON from markdown code blocks
+        const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (codeBlockMatch) {
+            jsonStr = codeBlockMatch[1].trim();
         }
 
-        const parsed = JSON.parse(jsonStr);
+        // 2. Try direct parse first
+        try {
+            const parsed = JSON.parse(jsonStr);
+            return normalizeDecision(parsed);
+        } catch {
+            // Not valid JSON as-is, try extraction
+        }
 
-        return {
-            action: typeof parsed.action === "string" ? parsed.action : "wait",
-            params: typeof parsed.params === "object" && parsed.params !== null
-                ? parsed.params
-                : {},
-            reasoning: typeof parsed.reasoning === "string"
-                ? parsed.reasoning
-                : "No reasoning provided",
-            confidence: typeof parsed.confidence === "number"
-                ? Math.max(0, Math.min(1, parsed.confidence))
-                : 0.5,
-        };
+        // 3. Extract JSON object from mixed text (find first { to last })
+        const firstBrace = jsonStr.indexOf("{");
+        const lastBrace = jsonStr.lastIndexOf("}");
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+            const extracted = jsonStr.slice(firstBrace, lastBrace + 1);
+            const parsed = JSON.parse(extracted);
+            return normalizeDecision(parsed);
+        }
+
+        throw new Error("No JSON object found in response");
     } catch {
         return {
             action: "wait",
@@ -217,4 +271,24 @@ function parseDecision(response: string): Decision {
             confidence: 0,
         };
     }
+}
+
+/** Normalize a parsed JSON object into a typed Decision */
+function normalizeDecision(parsed: Record<string, unknown>): Decision {
+    return {
+        action: typeof parsed.action === "string" ? parsed.action : "wait",
+        params: typeof parsed.params === "object" && parsed.params !== null
+            ? (parsed.params as Record<string, unknown>)
+            : {},
+        reasoning: typeof parsed.reasoning === "string"
+            ? parsed.reasoning
+            : "No reasoning provided",
+        confidence: typeof parsed.confidence === "number"
+            ? Math.max(0, Math.min(1, parsed.confidence))
+            : 0.5,
+        done: typeof parsed.done === "boolean" ? parsed.done : undefined,
+        nextCheckMs: typeof parsed.nextCheckMs === "number" && parsed.nextCheckMs >= 0
+            ? parsed.nextCheckMs
+            : undefined,
+    };
 }

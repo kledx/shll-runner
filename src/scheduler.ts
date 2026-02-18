@@ -79,34 +79,47 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
             }
 
             for (const tokenId of schedulableTokenIds) {
+                // B2: Per-token adaptive cadence — skip if not time yet
+                const nextCheck = await store.getNextCheckAt(tokenId);
+                if (nextCheck && Date.now() < nextCheck.getTime()) {
+                    continue;
+                }
+
                 const autopilot = await store.getAutopilot(tokenId);
                 let acquiredDbLock = false;
 
-                if (autopilot?.enabled) {
-                    acquiredDbLock = await store.tryAcquireAutopilotLock(
-                        tokenId,
-                        config.tokenLockLeaseMs,
-                    );
-                    if (!acquiredDbLock) continue;
-                }
+                // Skip if autopilot was disabled between snapshot and now
+                if (!autopilot?.enabled) continue;
+
+                acquiredDbLock = await store.tryAcquireAutopilotLock(
+                    tokenId,
+                    config.tokenLockLeaseMs,
+                );
+                if (!acquiredDbLock) continue;
 
                 try {
+                    // P-2026-018: Skip LLM agents with no tradingGoal (standby mode)
+                    const strategyPre = await store.getStrategy(tokenId);
+                    const isLlmAgent = strategyPre?.strategyType?.startsWith("llm_");
+                    if (isLlmAgent && !strategyPre?.strategyParams?.tradingGoal) {
+                        continue; // Standby — no instruction to process
+                    }
+
                     // Ensure agent is started in the manager
                     if (!agentManager.isActive(tokenId)) {
                         const obs = await chain.observe(tokenId);
                         // V3: read agentType from chain, fall back to strategy DB
                         const chainType = await chain.readAgentType(tokenId);
-                        const strategy = await store.getStrategy(tokenId);
                         const agentType = (chainType && chainType !== "unknown")
                             ? chainType
-                            : (strategy?.strategyType || "dca");
+                            : (strategyPre?.strategyType || "dca");
                         agentManager.startAgent({
                             tokenId,
                             agentType,
                             owner: obs.agentState.owner,
                             renter: obs.renter,
                             vault: obs.agentAccount,
-                            strategyParams: strategy?.strategyParams,
+                            strategyParams: strategyPre?.strategyParams,
                         });
                         log.info(
                             `[V3] Agent ${tokenId.toString()} started (type=${agentType})`,
@@ -121,6 +134,47 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
                     log.info(
                         `[V3][${tokenId.toString()}] ${result.action}: ${result.reasoning}${result.blocked ? ` [BLOCKED: ${result.blockReason}]` : ""}`,
                     );
+
+                    // Record non-TX decisions (wait / blocked / read-only) to runs
+                    if (!result.acted || result.blocked || !result.payload) {
+                        await store.recordRun({
+                            tokenId: tokenId.toString(),
+                            actionType: "auto",
+                            actionHash: "0x00",
+                            simulateOk: !result.blocked,
+                            brainType: agent.agentType,
+                            intentType: result.action,
+                            decisionReason: result.reasoning,
+                            error: result.blocked
+                                ? result.blockReason
+                                : undefined,
+                        });
+
+                        // P-2026-018: Done signal — clear goal, enter standby (keep autopilot active)
+                        if (result.done) {
+                            await store.clearTradingGoal(tokenId);
+                            agentManager.stopAgent(tokenId);
+                            log.info(
+                                `[V3][${tokenId.toString()}] Done — tradingGoal cleared, agent standby`,
+                            );
+                            continue;
+                        }
+                    }
+
+                    // B4: Persist next check time based on LLM suggestion (all paths)
+                    const strategy = await store.getStrategy(tokenId);
+                    const minInterval = strategy?.minIntervalMs ?? config.pollIntervalMs;
+                    const nextMs = Math.max(
+                        result.nextCheckMs ?? minInterval,
+                        minInterval,
+                    );
+                    const nextCheckAt = new Date(Date.now() + nextMs);
+                    await store.updateNextCheckAt(tokenId, nextCheckAt);
+
+                    // Skip TX submission for non-acting decisions
+                    if (!result.acted || result.blocked || !result.payload) {
+                        continue;
+                    }
 
                     // If the runtime produced a payload, submit it on-chain
                     if (result.acted && result.payload && !result.blocked) {
@@ -153,7 +207,19 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
                             actionHash: hash,
                             simulateOk: true,
                             txHash: txResult.hash,
+                            brainType: agent.agentType,
+                            intentType: result.action,
+                            decisionReason: result.reasoning,
                         });
+                    }
+
+                    // P-2026-018: Done signal — clear goal, enter standby (keep autopilot active)
+                    if (result.done) {
+                        await store.clearTradingGoal(tokenId);
+                        agentManager.stopAgent(tokenId);
+                        log.info(
+                            `[V3][${tokenId.toString()}] Done — tradingGoal cleared, agent standby`,
+                        );
                     }
                 } catch (err) {
                     const message =
@@ -181,6 +247,9 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
                         actionHash: "0x00",
                         simulateOk: false,
                         error: message,
+                        brainType: agent?.agentType,
+                        intentType: "error",
+                        decisionReason: message,
                     });
                 } finally {
                     if (acquiredDbLock) {

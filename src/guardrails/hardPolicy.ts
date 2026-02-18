@@ -16,19 +16,26 @@ import type { ActionPayload } from "../actions/interface.js";
 //            Hard Policy Implementation
 // ═══════════════════════════════════════════════════════
 
-/** Minimal ABI for PolicyGuardV4.validate */
+/** Minimal ABI for PolicyGuardV4.validate — must match contract signature */
 const POLICY_GUARD_V4_VALIDATE_ABI = [
     {
         name: "validate",
         type: "function",
         stateMutability: "view",
         inputs: [
-            { name: "instanceId", type: "uint256" },
+            { name: "nfa", type: "address" },
+            { name: "tokenId", type: "uint256" },
+            { name: "agentAccount", type: "address" },
             { name: "caller", type: "address" },
-            { name: "target", type: "address" },
-            { name: "selector", type: "bytes4" },
-            { name: "callData", type: "bytes" },
-            { name: "value", type: "uint256" },
+            {
+                name: "action",
+                type: "tuple",
+                components: [
+                    { name: "target", type: "address" },
+                    { name: "value", type: "uint256" },
+                    { name: "data", type: "bytes" },
+                ],
+            },
         ],
         outputs: [
             { name: "ok", type: "bool" },
@@ -42,6 +49,10 @@ export interface HardPolicyConfig {
     policyGuardV4Address: Address;
     /** Address of the operator wallet calling the vault */
     operatorAddress: Address;
+    /** Address of the AgentNFA contract */
+    agentNfaAddress: Address;
+    /** Address of the agent's vault (TBA) */
+    vaultAddress: Address;
 }
 
 export class HardPolicyGuard implements IGuardrails {
@@ -56,21 +67,21 @@ export class HardPolicyGuard implements IGuardrails {
             return { ok: true, violations: [] };
         }
 
-        const selector = action.data.slice(0, 10) as Hex;
-        const callData = `0x${action.data.slice(10)}` as Hex;
-
         try {
             const [ok, reason] = await this.config.publicClient.readContract({
                 address: this.config.policyGuardV4Address,
                 abi: POLICY_GUARD_V4_VALIDATE_ABI,
                 functionName: "validate",
                 args: [
+                    this.config.agentNfaAddress,
                     this.tokenId,
+                    this.config.vaultAddress,
                     this.config.operatorAddress,
-                    action.target,
-                    selector,
-                    callData,
-                    action.value,
+                    {
+                        target: action.target,
+                        value: action.value,
+                        data: action.data,  // full calldata with selector
+                    },
                 ],
             }) as [boolean, string];
 

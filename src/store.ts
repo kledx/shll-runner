@@ -123,6 +123,7 @@ function mapStrategyRow(row: Record<string, unknown>): StrategyConfigRecord {
         enabled: Boolean(row.enabled),
         lastRunAt: row.last_run_at == null ? undefined : toIso(row.last_run_at as Date | string),
         lastError: row.last_error == null ? undefined : String(row.last_error),
+        nextCheckAt: row.next_check_at == null ? undefined : toIso(row.next_check_at as Date | string),
         createdAt: toIso(row.created_at as Date | string),
         updatedAt: toIso(row.updated_at as Date | string),
     };
@@ -338,6 +339,12 @@ export class RunnerStore {
 
         // V3.0: create agent_memory, user_safety_configs, agent_blueprints tables
         await runV30Migrations(this.pool);
+
+        // V3.1: adaptive scheduler — per-token next check timestamp
+        await this.pool.query(`
+            ALTER TABLE token_strategies
+            ADD COLUMN IF NOT EXISTS next_check_at TIMESTAMPTZ NULL
+        `);
     }
 
     async close(): Promise<void> {
@@ -679,6 +686,37 @@ export class RunnerStore {
         return mapStrategyRow(result.rows[0] as Record<string, unknown>);
     }
 
+    /**
+ * Clear the tradingGoal from strategy_params when an agent signals "done".
+ * Archives the current goal to goalHistory first so it remains in the chat timeline.
+ */
+    async clearTradingGoal(tokenId: bigint): Promise<void> {
+        // Atomic: append current goal to goalHistory, then remove tradingGoal
+        await this.pool.query(
+            `
+        UPDATE token_strategies
+        SET strategy_params = (
+            CASE
+                WHEN strategy_params ? 'tradingGoal' AND strategy_params->>'tradingGoal' != ''
+                THEN jsonb_set(
+                    strategy_params,
+                    '{goalHistory}',
+                    COALESCE(strategy_params->'goalHistory', '[]'::jsonb) ||
+                        jsonb_build_array(jsonb_build_object(
+                            'text', strategy_params->'tradingGoal',
+                            'savedAt', to_jsonb(updated_at::text)
+                        ))
+                ) - 'tradingGoal'
+                ELSE strategy_params - 'tradingGoal'
+            END
+        ),
+            updated_at = NOW()
+        WHERE chain_id = $1 AND token_id = $2
+        `,
+            [this.chainId, tokenId.toString()]
+        );
+    }
+
     async listStrategies(): Promise<StrategyConfigRecord[]> {
         const result = await this.pool.query(
             `
@@ -690,6 +728,35 @@ export class RunnerStore {
             [this.chainId]
         );
         return result.rows.map((row) => mapStrategyRow(row as Record<string, unknown>));
+    }
+
+    /** V3.1: Update the next check timestamp for adaptive scheduling */
+    async updateNextCheckAt(tokenId: bigint, nextCheckAt: Date): Promise<void> {
+        await this.pool.query(
+            `
+            UPDATE token_strategies
+            SET
+                next_check_at = $3,
+                updated_at = NOW()
+            WHERE chain_id = $1 AND token_id = $2
+            `,
+            [this.chainId, tokenId.toString(), nextCheckAt.toISOString()]
+        );
+    }
+
+    /** V3.1: Get the next check timestamp for a token */
+    async getNextCheckAt(tokenId: bigint): Promise<Date | null> {
+        const result = await this.pool.query(
+            `
+            SELECT next_check_at
+            FROM token_strategies
+            WHERE chain_id = $1 AND token_id = $2
+            LIMIT 1
+            `,
+            [this.chainId, tokenId.toString()]
+        );
+        if (result.rows.length === 0 || result.rows[0].next_check_at == null) return null;
+        return new Date(result.rows[0].next_check_at as string);
     }
 
     async upsertMarketSignal(input: UpsertMarketSignalInput): Promise<MarketSignalRecord> {
@@ -952,7 +1019,7 @@ export class RunnerStore {
                 `
                 SELECT
                     COUNT(*)::int AS total_runs,
-                    COUNT(*) FILTER (WHERE tx_hash IS NOT NULL AND error IS NULL)::int AS success_runs,
+                    COUNT(*) FILTER (WHERE error IS NULL)::int AS success_runs,
                     COUNT(*) FILTER (WHERE error IS NOT NULL)::int AS failed_runs,
                     MAX(created_at) AS latest_run_at
                 FROM runs

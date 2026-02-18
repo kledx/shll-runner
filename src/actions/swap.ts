@@ -48,6 +48,7 @@ const SWAP_EXACT_ETH_ABI = [
 ] as const;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const WBNB_ADDRESS = process.env.WBNB_ADDRESS || "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd";
 const DEFAULT_DEADLINE_OFFSET = 20 * 60; // 20 minutes
 
 // ── Swap Action ────────────────────────────────────────
@@ -74,7 +75,15 @@ export function createSwapAction(): IAction {
             const router = params.router as string;
             const tokenIn = params.tokenIn as string;
             const tokenOut = params.tokenOut as string;
-            const amountIn = BigInt(params.amountIn as string);
+            const amountInRaw = params.amountIn as string | undefined;
+
+            // Validate required params before BigInt conversion
+            if (!router) throw new Error("swap: missing required param 'router'");
+            if (!tokenIn) throw new Error("swap: missing required param 'tokenIn'");
+            if (!tokenOut) throw new Error("swap: missing required param 'tokenOut'");
+            if (!amountInRaw) throw new Error("swap: missing required param 'amountIn'");
+
+            const amountIn = BigInt(amountInRaw);
             const minOut = params.minOut ? BigInt(params.minOut as string) : 0n;
             const deadline = BigInt(
                 (params.deadline as number) ??
@@ -87,8 +96,11 @@ export function createSwapAction(): IAction {
                 throw new Error("swap action requires params.vault to be set");
             }
 
-            const path: Address[] = [tokenIn as Address, tokenOut as Address];
             const isNativeIn = tokenIn.toLowerCase() === ZERO_ADDRESS;
+
+            // PancakeSwap V2: swapExactETHForTokens requires path[0] = WBNB, not address(0)
+            const pathIn: Address = isNativeIn ? (WBNB_ADDRESS as Address) : (tokenIn as Address);
+            const path: Address[] = [pathIn, tokenOut as Address];
 
             if (isNativeIn) {
                 const data = encodeFunctionData({
