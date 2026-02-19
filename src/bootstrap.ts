@@ -18,7 +18,6 @@ import {
 } from "./agent/factory.js";
 import { DefiPerception, type DefiPerceptionConfig } from "./perception/defi.js";
 import { PgMemory } from "./memory/pg.js";
-import { DCABrain, type DCABrainConfig } from "./brain/rule/dca.js";
 import { HotTokenBrain, type HotTokenBrainConfig } from "./brain/rule/hotToken.js";
 import { LLMBrain } from "./brain/llm/agent.js";
 import { createSwapAction } from "./actions/swap.js";
@@ -75,18 +74,6 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
     // ── Brain: Rule-based ──────────────────────────────
     // Rule brains use per-agent strategyParams from the DB
     // (passed through ChainAgentData.strategyParams → BrainFactoryContext)
-    registerBrain("rule:dca", (ctx: BrainFactoryContext) => {
-        const sp = ctx.strategyParams ?? {};
-        const dcaConfig: DCABrainConfig = {
-            tokenToBuy: sp.tokenToBuy as string ?? "",
-            tokenToSpend: sp.tokenToSpend as string ?? "",
-            amountPerExecution: sp.amountPerExecution as string ?? "0",
-            slippageBps: sp.slippageBps as number ?? 100,
-            routerAddress: sp.routerAddress as string ?? "",
-        };
-        return new DCABrain(dcaConfig);
-    });
-
     registerBrain("rule:hotToken", (ctx: BrainFactoryContext) => {
         const sp = ctx.strategyParams ?? {};
         const htConfig: HotTokenBrainConfig = {
@@ -121,6 +108,7 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
         const mergedConfig = {
             ...llmConfig,
             systemPrompt,
+            tradingGoal: typeof sp.tradingGoal === "string" ? sp.tradingGoal.trim() : undefined,
             provider: process.env.LLM_PROVIDER || llmConfig.provider,
             model: process.env.LLM_MODEL || llmConfig.model,
             apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || llmConfig.apiKey,

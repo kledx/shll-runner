@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem";
 
-export type StrategyType = "dca" | "llm_trader";
+export type StrategyType = "llm_trader" | "llm_defi";
 
 
 
@@ -132,6 +132,8 @@ export interface RunRecord {
     intentType?: string;
     /** V2.1: human-readable decision reason */
     decisionReason?: string;
+    /** V3.2: user-facing message from LLM agent */
+    decisionMessage?: string;
     createdAt: string;
 }
 

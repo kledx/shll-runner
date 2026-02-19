@@ -83,12 +83,6 @@ export async function runV30Migrations(pool: Pool): Promise<void> {
     // ── 5. Seed built-in blueprints ────────────────────
     const builtinBlueprints = [
         {
-            agent_type: "dca",
-            brain_type: "rule:dca",
-            actions: ["swap", "approve"],
-            perception: "defi",
-        },
-        {
             agent_type: "hot_token",
             brain_type: "rule:hotToken",
             actions: ["swap", "approve", "analytics"],

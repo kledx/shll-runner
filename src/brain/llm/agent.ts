@@ -30,14 +30,16 @@ import { buildUserPrompt } from "./prompt.js";
 //                   Decision Schema
 // ═══════════════════════════════════════════════════════
 
-/** Zod schema for structured Decision output — sent to LLM as JSON Schema */
 const DecisionSchema = z.object({
     action: z.string().describe("Action name: 'swap', 'approve', 'wrap', or 'wait'"),
     params: z.record(z.string(), z.unknown()).describe("Action parameters (tokenIn, tokenOut, amountIn, etc.)"),
-    reasoning: z.string().describe("Brief explanation of why this action was chosen"),
+    reasoning: z.string().describe("Internal analysis of why this action was chosen — not shown to user"),
+    message: z.string().optional().describe("User-facing reply: what you want to say to the user in a friendly, conversational tone"),
     confidence: z.number().min(0).max(1).describe("Confidence level 0.0 to 1.0"),
     done: z.boolean().optional().describe("Set true if the task is fully complete and no further checks are needed"),
     nextCheckMs: z.number().optional().describe("Suggested milliseconds until next check: 60000=1min, 300000=5min, 3600000=1h, 86400000=1day"),
+    blocked: z.boolean().optional().describe("Set true if the task CANNOT proceed due to missing prerequisites (no funds, no approval, etc.)"),
+    blockReason: z.string().optional().describe("User-facing reason why the agent is blocked"),
 });
 
 // ═══════════════════════════════════════════════════════
@@ -82,10 +84,13 @@ export class LLMBrain implements IBrain {
     ): Promise<Decision> {
         const systemPrompt = this.buildSystemPrompt(actions);
         const userPrompt = buildUserPrompt(obs, memories);
-        const maxSteps = this.config.maxStepsPerRun || 3;
+        const maxSteps = this.config.maxStepsPerRun || 5;
 
-        // Build tools from read-only actions
+        // Always give LLM full tool access — let the model decide when to use them
         const aiTools = this.buildTools(actions, obs);
+        const toolChoice = "auto" as const;
+
+        console.log(`  [LLM] goal="${(this.config.tradingGoal ?? "").slice(0, 60)}" maxSteps=${maxSteps}`);
 
         try {
             const result = await generateText({
@@ -93,6 +98,7 @@ export class LLMBrain implements IBrain {
                 system: systemPrompt,
                 prompt: userPrompt,
                 tools: aiTools,
+                toolChoice,
                 stopWhen: stepCountIs(maxSteps),
                 onStepFinish: (step) => {
                     // Log tool calls for observability
@@ -111,14 +117,31 @@ export class LLMBrain implements IBrain {
 
             // Parse the final text response into a Decision
             if (result.text) {
+                console.log(`  [LLM Raw] ${result.text.slice(0, 200)}`);
                 return parseDecision(result.text);
             }
 
-            // If no text (e.g. ended on tool call), default to wait
+            // If no text (e.g. maxSteps exhausted on tool call), extract last tool result
+            const lastStep = result.steps[result.steps.length - 1];
+            const lastToolResults = lastStep?.toolResults;
+            if (lastToolResults && lastToolResults.length > 0) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const toolData = (lastToolResults as any[]).filter(Boolean).map((tr) =>
+                    `[${tr.toolName}] ${JSON.stringify(tr.result).slice(0, 300)}`
+                ).join("\n");
+                console.log(`  [LLM] No final text — using tool results as reasoning`);
+                return {
+                    action: "wait",
+                    params: {},
+                    reasoning: toolData,
+                    confidence: 0.6,
+                    done: true,
+                };
+            }
             return {
                 action: "wait",
                 params: {},
-                reasoning: "LLM ended without a text response after tool calls",
+                reasoning: "Agent completed processing — no additional output",
                 confidence: 0,
             };
         } catch (error) {
@@ -148,18 +171,52 @@ export class LLMBrain implements IBrain {
             `- BUSD (BSC): 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56`,
             "",
             "## Instructions",
-            "- You have tools available to gather market data and portfolio info.",
+            "- ASSESS the user's intent before calling tools. Ask yourself: does this request need real-time on-chain data?",
+            "  1. NEEDS ON-CHAIN DATA → call tools first:",
+            "     - Trade requests (swap, buy, sell, convert) → get_portfolio + get_market_data",
+            "     - Balance / holdings queries → get_portfolio only",
+            "     - Price / market queries → get_market_data only",
+            "  2. DOES NOT NEED ON-CHAIN DATA → respond directly, NO tool calls, set done: true:",
+            "     - Greetings, small talk, test messages",
+            "     - Questions about the platform (what is SHLL, how to deposit, what can you do)",
+            "     - Strategy explanations, safety policy questions",
+            "     - General crypto / DeFi knowledge questions",
+            "     - Error troubleshooting (use SHLL Platform Context below)",
             "- Use get_market_data to check token prices BEFORE making trade decisions.",
             "- Use get_portfolio to check your current vault holdings.",
-            "- FIRST use tools to gather data (get_portfolio, get_market_data).",
             "- THEN output your final decision as a single JSON object:",
-            '  { "action": "<name>", "params": { ... }, "reasoning": "<why>", "confidence": 0.0-1.0 }',
+            '  { "action": "<name>", "params": { ... }, "reasoning": "<internal analysis>", "message": "<what you say to the user>", "confidence": 0.0-1.0 }',
             "- Valid actions for final decision: " + writeActions.join(", ") + ", or 'wait'",
             "- For swap: ALWAYS include router, tokenIn, tokenOut, amountIn (in wei). Use the PancakeSwap V2 Router address above.",
             "- Set action='wait' if no good opportunity exists right now.",
             "- Never exceed user safety limits.",
             "- Prefer capital preservation over risky trades.",
+            "- `reasoning`: internal analysis for debugging (not shown to user). Keep concise.",
+            "- `message`: user-facing reply. Write in a friendly, conversational tone. Required for all responses. PLAIN TEXT ONLY — do NOT use markdown formatting (no **, *, #, ```, etc.).",
+            "  Examples: 'I checked BNB price — it's at $312. No good entry yet, I'll keep watching.' or 'Your vault has 0.5 WBNB and 100 USDT. Everything looks healthy.'",
             "- IMPORTANT: After tool calls, your FINAL response must be ONLY valid JSON. Do NOT call tools in your final response.",
+            "",
+            "## Blocked Signal",
+            "- Set `blocked: true` + `blockReason` when the task CANNOT proceed due to missing prerequisites:",
+            "  - Vault has no funds → blocked: true, blockReason: 'Vault has no funds. Deposit tokens to your Agent Account.'",
+            "  - Insufficient gas (no BNB for fees) → blocked: true, blockReason: 'No BNB for gas. Send BNB to Agent Account.'",
+            "  - Missing token approval → blocked: true, blockReason: 'Token approval needed.'",
+            "  - Any condition that requires USER ACTION to resolve → blocked: true",
+            "- When blocked: set action='wait', done: false. The scheduler will back off to 5-min intervals until user fixes the issue.",
+            "- Do NOT use blocked for market conditions (price not reached yet). That is a normal 'wait'.",
+            "",
+            "## SHLL Platform Context",
+            "You are an AI Agent running on the SHLL platform. When encountering issues, guide the user:",
+            "- If vault balance is 0 or too low to trade:",
+            '  → Set blocked: true, blockReason: "Your vault has no funds. Send tokens (e.g. WBNB, USDT) to your Agent Account address shown at the top of the Console page."',
+            "- If a trade fails due to gas / insufficient BNB:",
+            '  → Set blocked: true, blockReason: "Your Agent needs BNB for gas fees. Send a small amount of BNB (e.g. 0.01 BNB) to the Agent Account address."',
+            "- If user asks how to deposit or fund the agent:",
+            '  → Tell user: "Go to the Console page → Vault section. Your Agent Account address is shown at the top. Send tokens directly to that address from your wallet."',
+            "- If user asks what you are or what SHLL is:",
+            '  → Tell user: "I am an on-chain AI trading agent on the SHLL platform. I can execute trades, monitor markets, and manage your vault — all validated by on-chain safety rules (PolicyGuard)."',
+            "- If a trade fails with authorization/permission error:",
+            '  → Set blocked: true, blockReason: "Autopilot authorization may have expired. Go to Console → click Enable Autopilot to re-authorize."',
             "",
             "## Scheduling Control",
             "- Set `done: true` when the user's request is FULLY SATISFIED and no further action is needed:",
@@ -242,10 +299,25 @@ function parseDecision(response: string): Decision {
         // 1. Try to extract JSON from markdown code blocks
         const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
         if (codeBlockMatch) {
+            // Capture text OUTSIDE the code block as potential conversational content
+            const textOutside = jsonStr
+                .replace(/```(?:json)?\s*[\s\S]*?```/, "")
+                .trim();
             jsonStr = codeBlockMatch[1].trim();
+
+            // Parse the JSON
+            try {
+                const parsed = JSON.parse(jsonStr);
+                const decision = normalizeDecision(parsed);
+                // If text outside code block is conversational content, use as message
+                if (textOutside.length > 20 && !decision.message) {
+                    decision.message = textOutside.slice(0, 1000);
+                }
+                return decision;
+            } catch { /* fall through to other strategies */ }
         }
 
-        // 2. Try direct parse first
+        // 2. Try direct parse first (entire response is pure JSON)
         try {
             const parsed = JSON.parse(jsonStr);
             return normalizeDecision(parsed);
@@ -257,13 +329,34 @@ function parseDecision(response: string): Decision {
         const firstBrace = jsonStr.indexOf("{");
         const lastBrace = jsonStr.lastIndexOf("}");
         if (firstBrace !== -1 && lastBrace > firstBrace) {
+            // Capture text before the JSON as conversational content
+            const textBefore = jsonStr.slice(0, firstBrace).trim();
             const extracted = jsonStr.slice(firstBrace, lastBrace + 1);
-            const parsed = JSON.parse(extracted);
-            return normalizeDecision(parsed);
+            try {
+                const parsed = JSON.parse(extracted);
+                const decision = normalizeDecision(parsed);
+                // Use conversational text as message if not already set
+                if (textBefore.length > 20 && !decision.message) {
+                    decision.message = textBefore.slice(0, 1000);
+                }
+                return decision;
+            } catch { /* fall through */ }
         }
 
         throw new Error("No JSON object found in response");
     } catch {
+        // If the response is not JSON at all, treat it as a conversational answer
+        const trimmed = response.trim();
+        if (trimmed.length > 0 && !trimmed.startsWith("{")) {
+            return {
+                action: "wait",
+                params: {},
+                reasoning: "Conversational response — no action needed",
+                message: trimmed.slice(0, 1000),
+                confidence: 0.8,
+                done: true,
+            };
+        }
         return {
             action: "wait",
             params: {},
@@ -282,7 +375,10 @@ function normalizeDecision(parsed: Record<string, unknown>): Decision {
             : {},
         reasoning: typeof parsed.reasoning === "string"
             ? parsed.reasoning
-            : "No reasoning provided",
+            : parsed.reasoning != null
+                ? String(parsed.reasoning)
+                : "No reasoning provided",
+        message: typeof parsed.message === "string" ? parsed.message : undefined,
         confidence: typeof parsed.confidence === "number"
             ? Math.max(0, Math.min(1, parsed.confidence))
             : 0.5,
@@ -290,5 +386,7 @@ function normalizeDecision(parsed: Record<string, unknown>): Decision {
         nextCheckMs: typeof parsed.nextCheckMs === "number" && parsed.nextCheckMs >= 0
             ? parsed.nextCheckMs
             : undefined,
+        blocked: typeof parsed.blocked === "boolean" ? parsed.blocked : undefined,
+        blockReason: typeof parsed.blockReason === "string" ? parsed.blockReason : undefined,
     };
 }

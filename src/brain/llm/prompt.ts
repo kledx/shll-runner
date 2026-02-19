@@ -53,7 +53,7 @@ export function buildUserPrompt(
         "## Recent History",
         ...(historyLines.length > 0 ? historyLines : ["  No previous activity"]),
         "",
-        "Analyze the current state. Use tools to gather more data if needed, then make your trading decision.",
+        "Analyze the user's intent. Only call tools if you need more data to fulfill the request.",
     ];
 
     return parts.join("\n");

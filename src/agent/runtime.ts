@@ -29,6 +29,8 @@ export interface RunResult {
     action: string;
     /** Brain reasoning */
     reasoning: string;
+    /** User-facing message from the LLM */
+    message?: string;
     /** Decision params (with injected vault/txValue) */
     params?: Record<string, unknown>;
     /** Encoded payload (undefined if wait or blocked) */
@@ -95,7 +97,9 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             acted: false,
             action: "wait",
             reasoning: decision.reasoning,
-            blocked: false,
+            message: decision.message,
+            blocked: decision.blocked ?? false,
+            blockReason: decision.blocked ? decision.blockReason : undefined,
             done: decision.done,
             nextCheckMs: decision.nextCheckMs,
         };
@@ -132,6 +136,7 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             acted: true,
             action: decision.action,
             reasoning: decision.reasoning,
+            message: decision.message,
             blocked: false,
             done: decision.done,
             nextCheckMs: decision.nextCheckMs,
@@ -167,6 +172,7 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             acted: false,
             action: decision.action,
             reasoning: decision.reasoning,
+            message: decision.message,
             payload,
             blocked: true,
             blockReason: firstViolation?.message ?? "Policy violation",
@@ -190,6 +196,7 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
         acted: true,
         action: decision.action,
         reasoning: decision.reasoning,
+        message: decision.message,
         params: enrichedParams,
         payload,
         blocked: false,

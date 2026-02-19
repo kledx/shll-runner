@@ -45,7 +45,7 @@ const statusQuerySchema = z.object({
 const strategyUpsertSchema = z.object({
     tokenId: bigintLike,
     strategyType: z
-        .enum(["dca", "llm_trader"])
+        .enum(["llm_trader", "llm_defi"])
         .optional(),
     target: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
     data: z.string().regex(/^0x[0-9a-fA-F]*$/).optional(),

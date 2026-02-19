@@ -280,7 +280,7 @@ export function createChainServices(config: ChainConfig): ChainServices {
 
     // keccak256 hash → agent type string lookup
     // Must match AgentNFA.sol TYPE_DCA, TYPE_LLM_TRADER, etc.
-    const KNOWN_TYPES = ["dca", "llm_trader", "hot_token", "llm_defi"];
+    const KNOWN_TYPES = ["llm_trader", "hot_token", "llm_defi"];
     const AGENT_TYPE_MAP: Record<string, string> = Object.fromEntries(
         KNOWN_TYPES.map((t) => [keccak256(toHex(t)), t]),
     );

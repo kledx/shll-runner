@@ -36,7 +36,7 @@ import {
     getSignalSyncState,
     type SignalSyncConfig,
 } from "../market/signalSync.js";
-import { getLastLoopAt } from "../scheduler.js";
+import { getLastLoopAt, runSingleToken, type SchedulerContext } from "../scheduler.js";
 
 // ═══════════════════════════════════════════════════════
 //                  Server Config
@@ -68,6 +68,8 @@ export interface ApiServerContext {
     // allowedTokenIdSet removed — V3 uses permit signatures for auth
     agentManager: AgentManager;
     log: Logger;
+    /** Optional: scheduler context for immediate agent trigger after upsert */
+    schedulerCtx?: SchedulerContext;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -229,21 +231,19 @@ export function startApiServer(ctx: ApiServerContext): void {
                     `Strategy upserted: tokenId=${payload.tokenId} type=${payload.strategyType}`,
                 );
 
-                // Immediately record an ack so the user sees instant feedback in chat
+                // Extract tradingGoal for immediate trigger check below
                 const goal = (payload.strategyParams as Record<string, unknown> | undefined)?.tradingGoal;
-                if (goal && typeof goal === "string" && goal.trim()) {
-                    await store.recordRun({
-                        tokenId: String(payload.tokenId),
-                        actionType: "wait",
-                        actionHash: "",
-                        simulateOk: true,
-                        brainType: "llm",
-                        intentType: "ack",
-                        decisionReason: "📨 收到指令，正在分析中...",
-                    });
-                }
 
                 writeJson(res, 200, { ok: true, strategy: record });
+
+                // Fire-and-forget: trigger immediate agent cycle if tradingGoal was set
+                if (goal && ctx.schedulerCtx) {
+                    const tid = BigInt(payload.tokenId);
+                    log.info(`[API] Triggering immediate cycle for token ${tid.toString()}`);
+                    void runSingleToken(tid, ctx.schedulerCtx, { skipCadenceCheck: true }).catch(
+                        (err) => log.error(`[API] Immediate trigger error for ${tid.toString()}:`, err instanceof Error ? err.message : err),
+                    );
+                }
                 return;
             }
 

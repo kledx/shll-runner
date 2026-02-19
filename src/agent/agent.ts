@@ -22,7 +22,7 @@ import type { IGuardrails } from "../guardrails/interface.js";
 export interface Agent {
     /** On-chain token ID */
     tokenId: bigint;
-    /** Agent type from chain (e.g. "dca", "llm_trader", "llm_defi") */
+    /** Agent type from chain (e.g. "llm_trader", "llm_defi", "hot_token") */
     agentType: string;
     /** NFT owner address */
     owner: Address;
@@ -65,4 +65,6 @@ export interface LLMConfig {
     endpoint?: string;
     /** Optional API key override (defaults to env) */
     apiKey?: string;
+    /** User instruction — used for intent classification (tool gating) */
+    tradingGoal?: string;
 }

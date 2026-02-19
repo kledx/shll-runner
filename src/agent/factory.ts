@@ -24,11 +24,6 @@ import type { IGuardrails } from "../guardrails/interface.js";
  * Future: load from `agent_blueprints` DB table for no-code composition.
  */
 const AGENT_BLUEPRINTS: Record<string, AgentBlueprint> = {
-    dca: {
-        brain: "rule:dca",
-        actions: ["swap", "approve"],
-        perception: "defi",
-    },
     hot_token: {
         brain: "rule:hotToken",
         actions: ["swap", "approve", "analytics"],

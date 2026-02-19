@@ -61,13 +61,16 @@ async function main(): Promise<void> {
     process.on("SIGINT", () => { void shutdown(); });
     process.on("SIGTERM", () => { void shutdown(); });
 
-    startApiServer({ store, chain, config, agentManager, log });
+    // Shared context for scheduler + API trigger
+    const schedulerCtx = { store, chain, config, agentManager, log };
+
+    startApiServer({ store, chain, config, agentManager, log, schedulerCtx });
 
     if (config.marketSignalSyncEnabled && config.marketSignalSourceUrl) {
         void runMarketSignalSyncLoop({ store, config, log });
     }
 
-    await startScheduler({ store, chain, config, agentManager, log });
+    await startScheduler(schedulerCtx);
 }
 
 main().catch((err) => {

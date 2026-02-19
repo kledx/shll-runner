@@ -94,6 +94,7 @@ function mapRunRow(row: Record<string, unknown>): RunRecord {
         brainType: row.brain_type == null ? undefined : String(row.brain_type),
         intentType: row.intent_type == null ? undefined : String(row.intent_type),
         decisionReason: row.decision_reason == null ? undefined : String(row.decision_reason),
+        decisionMessage: row.decision_message == null ? undefined : String(row.decision_message),
         createdAt: toIso(row.created_at as Date | string),
     };
 }
@@ -335,6 +336,12 @@ export class RunnerStore {
         await this.pool.query(`
             ALTER TABLE runs
             ADD COLUMN IF NOT EXISTS decision_reason TEXT NULL
+        `);
+
+        // V3.2: user-facing message from LLM agent
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS decision_message TEXT NULL
         `);
 
         // V3.0: create agent_memory, user_safety_configs, agent_blueprints tables
@@ -944,9 +951,10 @@ export class RunnerStore {
                 failure_category,
                 brain_type,
                 intent_type,
-                decision_reason
+                decision_reason,
+                decision_message
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             RETURNING *
             `,
             [
@@ -963,6 +971,7 @@ export class RunnerStore {
                 input.brainType ?? null,
                 input.intentType ?? null,
                 input.decisionReason ?? null,
+                input.decisionMessage ?? null,
             ]
         );
 
