@@ -691,7 +691,8 @@ export class RunnerStore {
  * Archives the current goal to goalHistory first so it remains in the chat timeline.
  */
     async clearTradingGoal(tokenId: bigint): Promise<void> {
-        // Atomic: append current goal to goalHistory, then remove tradingGoal
+        // Atomic: append current goal to goalHistory (using goalSetAt for stable timestamp),
+        // then remove tradingGoal and goalSetAt keys
         await this.pool.query(
             `
         UPDATE token_strategies
@@ -704,10 +705,10 @@ export class RunnerStore {
                     COALESCE(strategy_params->'goalHistory', '[]'::jsonb) ||
                         jsonb_build_array(jsonb_build_object(
                             'text', strategy_params->'tradingGoal',
-                            'savedAt', to_jsonb(updated_at::text)
+                            'savedAt', COALESCE(strategy_params->'goalSetAt', to_jsonb(updated_at::text))
                         ))
-                ) - 'tradingGoal'
-                ELSE strategy_params - 'tradingGoal'
+                ) - 'tradingGoal' - 'goalSetAt'
+                ELSE strategy_params - 'tradingGoal' - 'goalSetAt'
             END
         ),
             updated_at = NOW()

@@ -228,6 +228,21 @@ export function startApiServer(ctx: ApiServerContext): void {
                 log.info(
                     `Strategy upserted: tokenId=${payload.tokenId} type=${payload.strategyType}`,
                 );
+
+                // Immediately record an ack so the user sees instant feedback in chat
+                const goal = (payload.strategyParams as Record<string, unknown> | undefined)?.tradingGoal;
+                if (goal && typeof goal === "string" && goal.trim()) {
+                    await store.recordRun({
+                        tokenId: String(payload.tokenId),
+                        actionType: "wait",
+                        actionHash: "",
+                        simulateOk: true,
+                        brainType: "llm",
+                        intentType: "ack",
+                        decisionReason: "📨 收到指令，正在分析中...",
+                    });
+                }
+
                 writeJson(res, 200, { ok: true, strategy: record });
                 return;
             }
