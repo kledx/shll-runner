@@ -4,7 +4,6 @@ services:
   agent-runner:
     image: ghcr.io/kledx/shll-runner:latest
     pull_policy: always
-    container_name: shll-agent-runner
     restart: unless-stopped
     environment:
       # ─── Chain ───
