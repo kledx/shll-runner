@@ -5,8 +5,35 @@
  * This module only provides the user prompt (current observation state).
  */
 
-import type { Observation } from "../../perception/interface.js";
+import type { Observation, TokenBalance } from "../../perception/interface.js";
 import type { MemoryEntry } from "../../memory/interface.js";
+
+// ═══════════════════════════════════════════════════════
+//                  Helpers
+// ═══════════════════════════════════════════════════════
+
+/** Convert raw wei balance to human-readable string (e.g. 298700000000000000 with 18 decimals → "0.2987") */
+function formatBalance(bal: TokenBalance): string {
+    const raw = bal.balance.toString();
+    const d = bal.decimals;
+    if (d === 0) return raw;
+
+    const padded = raw.padStart(d + 1, "0");
+    const intPart = padded.slice(0, padded.length - d) || "0";
+    const fracPart = padded.slice(padded.length - d).replace(/0+$/, "");
+    // Show up to 6 decimal places
+    const truncFrac = fracPart.slice(0, 6);
+    return truncFrac ? `${intPart}.${truncFrac}` : intPart;
+}
+
+/** Convert raw wei string to human-readable BNB string */
+function weiToBnb(wei: bigint): string {
+    const raw = wei.toString();
+    const padded = raw.padStart(19, "0");
+    const intPart = padded.slice(0, padded.length - 18) || "0";
+    const fracPart = padded.slice(padded.length - 18).replace(/0+$/, "").slice(0, 6);
+    return fracPart ? `${intPart}.${fracPart}` : intPart;
+}
 
 // ═══════════════════════════════════════════════════════
 //                  User Prompt
@@ -16,9 +43,9 @@ export function buildUserPrompt(
     obs: Observation,
     memories: MemoryEntry[],
 ): string {
-    // Vault state
+    // Vault state — show human-readable balances
     const vaultLines = obs.vault.length > 0
-        ? obs.vault.map(t => `  ${t.symbol}: ${t.balance} (${t.decimals} decimals)`)
+        ? obs.vault.map(t => `  ${t.symbol}: ${formatBalance(t)} (raw: ${t.balance} wei, ${t.decimals} decimals)`)
         : ["  No tracked tokens"];
 
     // Price data
@@ -38,7 +65,7 @@ export function buildUserPrompt(
 
     const parts: string[] = [
         "## Current State",
-        `Native Balance: ${obs.nativeBalance.toString()} wei`,
+        `Native Balance: ${weiToBnb(obs.nativeBalance)} BNB (${obs.nativeBalance.toString()} wei)`,
         "",
         "Vault Tokens:",
         ...vaultLines,
@@ -58,3 +85,4 @@ export function buildUserPrompt(
 
     return parts.join("\n");
 }
+

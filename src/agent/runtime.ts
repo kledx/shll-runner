@@ -182,11 +182,17 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
 
     if (!safetyResult.ok) {
         const firstViolation = safetyResult.violations[0];
+        const blockMsg = firstViolation?.message ?? "Policy violation";
+
+        // Override LLM's optimistic message with the actual block reason
+        // so the user sees what happened, not the LLM's pre-check plan
+        const userMessage = `Action blocked by safety policy: ${blockMsg}`;
+
         await agent.memory.store({
             type: "blocked",
             action: decision.action,
             params: decision.params,
-            result: { success: false, error: firstViolation?.message ?? "Policy violation" },
+            result: { success: false, error: blockMsg },
             reasoning: decision.reasoning,
             timestamp: new Date(),
         });
@@ -194,10 +200,10 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             acted: false,
             action: decision.action,
             reasoning: decision.reasoning,
-            message: decision.message,
+            message: userMessage,
             payload,
             blocked: true,
-            blockReason: firstViolation?.message ?? "Policy violation",
+            blockReason: blockMsg,
             done: decision.done,
             nextCheckMs: decision.nextCheckMs,
         };
