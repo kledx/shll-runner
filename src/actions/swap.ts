@@ -144,6 +144,8 @@ export function createSwapAction(): IAction {
 
             // PancakeSwap V2: paths must use WBNB, not address(0)
             const pathIn: Address = isNativeIn ? (WBNB_ADDRESS as Address) : (tokenIn as Address);
+            // For native BNB output: use WBNB as tokenOut (smart contract vaults cannot
+            // receive native BNB via swapExactTokensForETH due to reentrancy guard gas limits)
             const pathOut: Address = isNativeOut ? (WBNB_ADDRESS as Address) : (tokenOut as Address);
             const path: Address[] = [pathIn, pathOut];
 
@@ -161,33 +163,8 @@ export function createSwapAction(): IAction {
                 };
             }
 
-            if (isNativeOut) {
-                // ERC20 → BNB: swapExactTokensForETH
-                const data = encodeFunctionData({
-                    abi: [{
-                        type: "function" as const,
-                        name: "swapExactTokensForETH",
-                        inputs: [
-                            { name: "amountIn", type: "uint256" },
-                            { name: "amountOutMin", type: "uint256" },
-                            { name: "path", type: "address[]" },
-                            { name: "to", type: "address" },
-                            { name: "deadline", type: "uint256" },
-                        ],
-                        outputs: [{ name: "amounts", type: "uint256[]" }],
-                        stateMutability: "nonpayable" as const,
-                    }] as const,
-                    functionName: "swapExactTokensForETH",
-                    args: [amountIn, minOut, path, vault, deadline],
-                });
-                return {
-                    target: router as Address,
-                    value: 0n,
-                    data: data as Hex,
-                };
-            }
-
-            // ERC20 → ERC20: swapExactTokensForTokens
+            // ERC20 → ERC20 (or ERC20 → WBNB when user wants BNB)
+            // Always use swapExactTokensForTokens — safe for smart contract wallets
             const data = encodeFunctionData({
                 abi: SWAP_EXACT_TOKENS_ABI,
                 functionName: "swapExactTokensForTokens",
