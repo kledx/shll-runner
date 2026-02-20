@@ -147,7 +147,16 @@ export function createSwapAction(): IAction {
             // For native BNB output: use WBNB as tokenOut (smart contract vaults cannot
             // receive native BNB via swapExactTokensForETH due to reentrancy guard gas limits)
             const pathOut: Address = isNativeOut ? (WBNB_ADDRESS as Address) : (tokenOut as Address);
-            const path: Address[] = [pathIn, pathOut];
+
+            // Build routing path.
+            // OPTIMIZATION: If neither token is WBNB, bridge through WBNB to ensure liquidity.
+            // Direct ERC20-ERC20 pairs (e.g. USDT-BUSD) often lack liquidity on V2.
+            let path: Address[];
+            if (pathIn.toLowerCase() !== WBNB_ADDRESS.toLowerCase() && pathOut.toLowerCase() !== WBNB_ADDRESS.toLowerCase()) {
+                path = [pathIn, WBNB_ADDRESS as Address, pathOut];
+            } else {
+                path = [pathIn, pathOut];
+            }
 
             if (isNativeIn) {
                 // BNB → ERC20: swapExactETHForTokens
