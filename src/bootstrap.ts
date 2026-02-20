@@ -48,17 +48,59 @@ export interface BootstrapConfig {
 // ═══════════════════════════════════════════════════════
 
 export function bootstrapAgentModules(config: BootstrapConfig): void {
+    // Determine chain for correct token addresses
+    const isMainnet = config.chainId === 56;
+
+    const trackedTokens: DefiPerceptionConfig["trackedTokens"] = [
+        {
+            address: config.wbnbAddress,
+            symbol: "WBNB",
+            decimals: 18,
+        },
+        {
+            address: (isMainnet
+                ? "0x55d398326f99059fF775485246999027B3197955"
+                : "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd") as Address,
+            symbol: "USDT",
+            decimals: 18,
+        },
+        {
+            address: (isMainnet
+                ? "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
+                : "0xeD24FC36d5Ee211Ea25A80239Fb8C4Cfd80f12Ee") as Address,
+            symbol: "BUSD",
+            decimals: 18,
+        },
+        {
+            address: (isMainnet
+                ? "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
+                : "0x64544969ed7EBf5f083679233325356EbE738930") as Address,
+            symbol: "USDC",
+            decimals: 18,
+        },
+    ];
+
+    // Allow deployer to add extra tracked tokens via env:
+    // EXTRA_TRACKED_TOKENS=0xAddr1:SYM1:18,0xAddr2:SYM2:8
+    const extra = process.env.EXTRA_TRACKED_TOKENS;
+    if (extra) {
+        for (const entry of extra.split(",")) {
+            const [addr, sym, dec] = entry.trim().split(":");
+            if (addr && sym && dec) {
+                trackedTokens.push({
+                    address: addr as Address,
+                    symbol: sym,
+                    decimals: Number(dec),
+                });
+            }
+        }
+    }
+
     const perceptionConfig: DefiPerceptionConfig = {
         publicClient: config.publicClient,
         agentNfaAddress: config.agentNfaAddress,
         agentNfaAbi: config.agentNfaAbi,
-        trackedTokens: [
-            {
-                address: config.wbnbAddress,
-                symbol: "WBNB",
-                decimals: 18,
-            },
-        ],
+        trackedTokens,
     };
 
     // ── Perception ─────────────────────────────────────
