@@ -213,10 +213,14 @@ export async function runSingleToken(
         // B4: Persist next check time based on LLM suggestion (all paths)
         const strategy = await store.getStrategy(tokenId);
         const minInterval = strategy?.minIntervalMs ?? config.pollIntervalMs;
-        const nextMs = Math.max(
-            result.nextCheckMs ?? minInterval,
-            minInterval,
-        );
+
+        // If the agent successfully acted AND requests a fast follow-up (e.g. approve → swap),
+        // allow bypassing minInterval for multi-step workflows
+        const FAST_FOLLOWUP_MIN = 10_000; // 10 seconds minimum for chained actions
+        const nextMs = (result.acted && result.nextCheckMs && result.nextCheckMs < minInterval)
+            ? Math.max(result.nextCheckMs, FAST_FOLLOWUP_MIN)
+            : Math.max(result.nextCheckMs ?? minInterval, minInterval);
+
         const nextCheckAt = new Date(Date.now() + nextMs);
         await store.updateNextCheckAt(tokenId, nextCheckAt);
 

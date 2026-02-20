@@ -206,7 +206,7 @@ export class LLMBrain implements IBrain {
             "  2. SECOND cycle: call `swap` — execute the actual swap",
             "     params: { router, tokenIn, tokenOut, amountIn, minOut }",
             "- If swapping native BNB (tokenIn = 0x0000...0000), you do NOT need approve — go directly to swap.",
-            "- After calling approve, set done: false so you get another cycle to do the swap.",
+            "- After calling approve, set done: false and nextCheckMs: 10000 so the swap follows in ~10 seconds.",
             "- In your message to the user after approve, tell them: 'Approval done, now executing the swap...'",
             "  If you cannot estimate the output, use get_market_data first, then calculate minOut.",
             "- For approve: spender must be the PancakeSwap V2 Router. Other addresses will be rejected.",
