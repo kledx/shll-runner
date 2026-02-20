@@ -44,6 +44,10 @@ export interface ExecutionContext {
     vault: string;
     /** Current block timestamp */
     timestamp: number;
+    /** Action name (swap, approve, wrap, etc.) for action-specific policy checks */
+    actionName?: string;
+    /** Total spend amount in wei (includes ERC20 amountIn, not just native value) */
+    spendAmount?: bigint;
 }
 
 // ═══════════════════════════════════════════════════════

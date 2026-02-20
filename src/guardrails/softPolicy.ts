@@ -56,8 +56,9 @@ export class SoftPolicyEngine implements IGuardrails {
 
         const violations: PolicyViolation[] = [];
 
-        // 1. Allowed DEXes check
-        if (config.allowedDexes.length > 0) {
+        // 1. Allowed DEXes check — only applies to swap actions
+        //    (approve target = token contract, not a DEX)
+        if (config.allowedDexes.length > 0 && context.actionName === "swap") {
             const target = action.target.toLowerCase();
             const isAllowed = config.allowedDexes.some(
                 dex => dex.toLowerCase() === target,
@@ -70,13 +71,14 @@ export class SoftPolicyEngine implements IGuardrails {
             }
         }
 
-        // 2. Per-trade amount limit
+        // 2. Per-trade amount limit (uses spendAmount which covers both native + ERC20)
         if (config.maxTradeAmount !== "0") {
             const maxTrade = BigInt(config.maxTradeAmount);
-            if (action.value > maxTrade) {
+            const tradeAmount = context.spendAmount ?? action.value;
+            if (tradeAmount > maxTrade) {
                 violations.push({
                     policy: "maxTradeAmount",
-                    message: `Trade value ${action.value} exceeds per-trade limit ${maxTrade}`,
+                    message: `Trade amount ${tradeAmount} exceeds per-trade limit ${maxTrade}`,
                 });
             }
         }
@@ -106,14 +108,15 @@ export class SoftPolicyEngine implements IGuardrails {
             }
         }
 
-        // 5. Daily spending limit
+        // 5. Daily spending limit (uses spendAmount)
         if (config.maxDailyAmount !== "0") {
             const maxDaily = BigInt(config.maxDailyAmount);
             const todaySpent = await this.getTodaySpending();
-            if (todaySpent + action.value > maxDaily) {
+            const tradeAmount = context.spendAmount ?? action.value;
+            if (todaySpent + tradeAmount > maxDaily) {
                 violations.push({
                     policy: "maxDailyAmount",
-                    message: `Would exceed daily limit: spent=${todaySpent}, tx=${action.value}, max=${maxDaily}`,
+                    message: `Would exceed daily limit: spent=${todaySpent}, tx=${tradeAmount}, max=${maxDaily}`,
                 });
             }
         }

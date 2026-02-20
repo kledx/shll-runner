@@ -149,11 +149,19 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
     });
 
     // ───── 5. Check Safety: guardrails ─────
+    // Compute spend amount: for native BNB swaps use payload.value,
+    // for ERC20 swaps use amountIn from decision params
+    const spendAmount = payload.value > 0n
+        ? payload.value
+        : (decision.params?.amountIn ? BigInt(decision.params.amountIn as string) : 0n);
+
     const context: ExecutionContext = {
         tokenId: agent.tokenId,
         agentType: agent.agentType,
         vault: agent.vault,
         timestamp: Math.floor(Date.now() / 1000),
+        actionName: decision.action,
+        spendAmount,
     };
 
     const safetyResult = await agent.guardrails.check(payload, context);
