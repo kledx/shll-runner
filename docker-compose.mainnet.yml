@@ -68,7 +68,7 @@ services:
       - STATUS_RUNS_LIMIT=${STATUS_RUNS_LIMIT:-20}
 
     ports:
-      - "${API_PORT:-8788}:${API_PORT:-8788}"
+      - "8788:8787"
     logging:
       driver: json-file
       options:
