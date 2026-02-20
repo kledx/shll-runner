@@ -48,7 +48,7 @@ const SWAP_EXACT_ETH_ABI = [
 ] as const;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-const WBNB_ADDRESS = process.env.WBNB_ADDRESS || "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd";
+const WBNB_ADDRESS = process.env.WBNB_ADDRESS || "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
 const DEFAULT_DEADLINE_OFFSET = 20 * 60; // 20 minutes
 
 // ── Swap Action ────────────────────────────────────────

@@ -162,7 +162,7 @@ export class LLMBrain implements IBrain {
     /** Build system prompt — tools are provided via API, not listed in prompt */
     private buildSystemPrompt(actions: IAction[]): string {
         const writeActions = actions.filter(a => !a.readonly).map(a => a.name);
-        const wbnb = process.env.WBNB_ADDRESS || "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd";
+        const wbnb = process.env.WBNB_ADDRESS || "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
         const router = process.env.ROUTER_ADDRESS || "0x10ED43C718714eb63d5aA57B78B54704E256024E";
         const chainId = process.env.CHAIN_ID || "56";
         const isMainnet = chainId === "56";
