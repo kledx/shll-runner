@@ -25,6 +25,7 @@ import type { MemoryEntry } from "../../memory/interface.js";
 import type { IAction } from "../../actions/interface.js";
 import type { LLMConfig } from "../../agent/agent.js";
 import { buildUserPrompt } from "./prompt.js";
+import { sanitizeForUser } from "../../errors.js";
 
 // ═══════════════════════════════════════════════════════
 //                   Decision Schema
@@ -145,12 +146,14 @@ export class LLMBrain implements IBrain {
                 confidence: 0,
             };
         } catch (error) {
-            const message = error instanceof Error ? error.message : "Unknown LLM error";
-            console.error(`  [LLM Error] ${message}`);
+            const rawMessage = error instanceof Error ? error.message : "Unknown LLM error";
+            console.error(`  [LLM Error] ${rawMessage}`);
+            const userMessage = sanitizeForUser(rawMessage);
             return {
                 action: "wait",
                 params: {},
-                reasoning: `LLM error: ${message}`,
+                reasoning: `System error (details logged)`,
+                message: userMessage,
                 confidence: 0,
             };
         }

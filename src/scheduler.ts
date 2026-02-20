@@ -12,6 +12,7 @@ import type { ChainServices } from "./chain.js";
 import { AgentManager } from "./agent/manager.js";
 import { getBlueprint } from "./agent/factory.js";
 import { runAgentCycle, recordExecution } from "./agent/runtime.js";
+import { sanitizeForUser, extractErrorMessage } from "./errors.js";
 
 // ═══════════════════════════════════════════════════════
 //                  Config Interface
@@ -268,11 +269,11 @@ export async function runSingleToken(
 
         return true;
     } catch (err) {
-        const message =
-            err instanceof Error ? err.message : String(err);
+        const rawMessage = extractErrorMessage(err);
+        const userMessage = sanitizeForUser(rawMessage);
         log.error(
             `[V3][${tokenId.toString()}] error:`,
-            message,
+            rawMessage,
         );
 
         // Record failure in agent memory if agent exists
@@ -283,7 +284,7 @@ export async function runSingleToken(
                 "unknown",
                 {},
                 "cycle error",
-                { success: false, error: message },
+                { success: false, error: rawMessage },
             );
         }
 
@@ -292,10 +293,11 @@ export async function runSingleToken(
             actionType: "auto",
             actionHash: "0x00",
             simulateOk: false,
-            error: message,
+            error: rawMessage,
             brainType: agent?.agentType,
             intentType: "error",
-            decisionReason: message,
+            decisionReason: userMessage,
+            decisionMessage: userMessage,
         });
 
         return false;
