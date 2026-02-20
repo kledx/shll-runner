@@ -163,14 +163,20 @@ export class LLMBrain implements IBrain {
     private buildSystemPrompt(actions: IAction[]): string {
         const writeActions = actions.filter(a => !a.readonly).map(a => a.name);
         const wbnb = process.env.WBNB_ADDRESS || "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd";
+        const router = process.env.ROUTER_ADDRESS || "0x10ED43C718714eb63d5aA57B78B54704E256024E";
+        const chainId = process.env.CHAIN_ID || "56";
+        const isMainnet = chainId === "56";
+        const usdt = isMainnet
+            ? "0x55d398326f99059fF775485246999027B3197955"
+            : "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd";
         const parts: string[] = [
             this.config.systemPrompt,
             "",
             "## BSC Infrastructure",
-            `- PancakeSwap V2 Router: 0xD99D1c33F9fC3444f8101754aBC46c52416550D1`,
+            `- PancakeSwap V2 Router: ${router}`,
             `- WBNB: ${wbnb}`,
             `- Native BNB (for tokenIn): 0x0000000000000000000000000000000000000000`,
-            `- USDT (BSC): 0x55d398326f99059fF775485246999027B3197955`,
+            `- USDT (BSC): ${usdt}`,
             `- BUSD (BSC): 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56`,
             "",
             "## Instructions",
