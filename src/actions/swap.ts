@@ -140,12 +140,15 @@ export function createSwapAction(): IAction {
             }
 
             const isNativeIn = tokenIn.toLowerCase() === ZERO_ADDRESS;
+            const isNativeOut = tokenOut.toLowerCase() === ZERO_ADDRESS;
 
-            // PancakeSwap V2: swapExactETHForTokens requires path[0] = WBNB, not address(0)
+            // PancakeSwap V2: paths must use WBNB, not address(0)
             const pathIn: Address = isNativeIn ? (WBNB_ADDRESS as Address) : (tokenIn as Address);
-            const path: Address[] = [pathIn, tokenOut as Address];
+            const pathOut: Address = isNativeOut ? (WBNB_ADDRESS as Address) : (tokenOut as Address);
+            const path: Address[] = [pathIn, pathOut];
 
             if (isNativeIn) {
+                // BNB → ERC20: swapExactETHForTokens
                 const data = encodeFunctionData({
                     abi: SWAP_EXACT_ETH_ABI,
                     functionName: "swapExactETHForTokens",
@@ -158,6 +161,33 @@ export function createSwapAction(): IAction {
                 };
             }
 
+            if (isNativeOut) {
+                // ERC20 → BNB: swapExactTokensForETH
+                const data = encodeFunctionData({
+                    abi: [{
+                        type: "function" as const,
+                        name: "swapExactTokensForETH",
+                        inputs: [
+                            { name: "amountIn", type: "uint256" },
+                            { name: "amountOutMin", type: "uint256" },
+                            { name: "path", type: "address[]" },
+                            { name: "to", type: "address" },
+                            { name: "deadline", type: "uint256" },
+                        ],
+                        outputs: [{ name: "amounts", type: "uint256[]" }],
+                        stateMutability: "nonpayable" as const,
+                    }] as const,
+                    functionName: "swapExactTokensForETH",
+                    args: [amountIn, minOut, path, vault, deadline],
+                });
+                return {
+                    target: router as Address,
+                    value: 0n,
+                    data: data as Hex,
+                };
+            }
+
+            // ERC20 → ERC20: swapExactTokensForTokens
             const data = encodeFunctionData({
                 abi: SWAP_EXACT_TOKENS_ABI,
                 functionName: "swapExactTokensForTokens",
