@@ -2,8 +2,8 @@ version: "3.8"
 
 services:
   agent-runner:
+    container_name: agent-runner
     image: ghcr.io/kledx/shll-runner:latest
-    pull_policy: always
     restart: unless-stopped
     environment:
       # ─── Chain ───

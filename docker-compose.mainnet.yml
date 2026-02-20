@@ -4,6 +4,7 @@ version: "3.8"
 
 services:
   agent-runner-mainnet:
+    container_name: agent-runner-mainnet
     image: ghcr.io/kledx/shll-runner:latest
     pull_policy: always
     restart: unless-stopped
