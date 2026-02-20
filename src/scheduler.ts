@@ -268,8 +268,9 @@ export async function runSingleToken(
         }
 
         // P-2026-018: Done signal — clear goal, enter standby (keep autopilot active)
-        // Force done for one-shot TX actions (swap/approve/wrap) even if LLM forgot to set done: true
-        const ONE_SHOT_ACTIONS = ["swap", "approve", "wrap"];
+        // Force done for one-shot TX actions even if LLM forgot to set done: true
+        // (Removed "approve" so multi-step approve->swap workflows can continue)
+        const ONE_SHOT_ACTIONS = ["swap", "wrap"];
         const isOneShot = ONE_SHOT_ACTIONS.includes(result.action);
         const shouldDone = result.done || (result.acted && isOneShot);
 
