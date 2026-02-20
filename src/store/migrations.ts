@@ -85,13 +85,13 @@ export async function runV30Migrations(pool: Pool): Promise<void> {
         {
             agent_type: "hot_token",
             brain_type: "rule:hotToken",
-            actions: ["swap", "approve", "analytics"],
+            actions: ["swap", "approve", "wrap", "analytics"],
             perception: "defi",
         },
         {
             agent_type: "llm_trader",
             brain_type: "llm",
-            actions: ["swap", "approve", "analytics", "portfolio"],
+            actions: ["swap", "approve", "wrap", "analytics", "portfolio"],
             perception: "defi",
             llm_config: {
                 systemPrompt: "You are a DeFi trading agent. Analyze market data and vault positions to make profitable trades. Be conservative and prioritize capital preservation.",
@@ -103,7 +103,7 @@ export async function runV30Migrations(pool: Pool): Promise<void> {
         {
             agent_type: "llm_defi",
             brain_type: "llm",
-            actions: ["swap", "approve", "analytics", "portfolio"],
+            actions: ["swap", "approve", "wrap", "analytics", "portfolio"],
             perception: "defi",
             llm_config: {
                 systemPrompt: "You are an advanced DeFi agent capable of multi-step strategies. Analyze positions, market trends, and optimize yield across protocols.",
@@ -118,7 +118,11 @@ export async function runV30Migrations(pool: Pool): Promise<void> {
         await pool.query(
             `INSERT INTO agent_blueprints (agent_type, brain_type, actions, perception, llm_config, created_by)
              VALUES ($1, $2, $3, $4, $5, NULL)
-             ON CONFLICT (agent_type) DO NOTHING`,
+             ON CONFLICT (agent_type) DO UPDATE SET
+               brain_type = EXCLUDED.brain_type,
+               actions = EXCLUDED.actions,
+               perception = EXCLUDED.perception,
+               llm_config = EXCLUDED.llm_config`,
             [
                 bp.agent_type,
                 bp.brain_type,
