@@ -54,13 +54,14 @@ export function buildUserPrompt(
         ? priceEntries.map(([addr, price]) => `  ${addr}: $${price.toFixed(4)}`)
         : ["  No price data"];
 
-    // Recent history
+    // Recent history — include error details so LLM can distinguish failure types
     const historyLines = memories.slice(0, 10).map(m => {
         const ts = m.timestamp.toISOString().slice(0, 19);
         const action = m.action ?? "N/A";
         const status = m.result?.success === true ? "OK" :
             m.result?.success === false ? "FAIL" : "-";
-        return `  [${ts}] ${status} ${m.type}: ${action} — ${m.reasoning ?? ""}`;
+        const errorInfo = m.result?.error ? ` [ERROR: ${m.result.error}]` : "";
+        return `  [${ts}] ${status} ${m.type}: ${action}${errorInfo} — ${m.reasoning ?? ""}`;
     });
 
     const parts: string[] = [
