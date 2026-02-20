@@ -106,6 +106,7 @@ export class DefiPerception implements IPerception {
         }
 
         return {
+            vaultAddress: this.vault,
             vault: vaultBalances,
             nativeBalance,
             prices: new Map(),

@@ -120,6 +120,46 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
         };
     }
 
+    // ───── 3.1 Circuit Breaker: Prevent infinite retry loops ─────
+    // If the LLM is attempting an action that has failed repeatedly, we step in to prevent gas griefing.
+    if (decision.action !== "wait") {
+        let consecutiveFailures = 0;
+        for (const m of memories) {
+            // Break chain if we see a successful execution or observation
+            if (m.type === "execution" && m.result?.success) break;
+            if (m.type === "observation") break;
+
+            // Count if this exact action failed/blocked recently
+            if (m.action === decision.action && (m.type === "blocked" || (m.type === "execution" && m.result?.success === false))) {
+                consecutiveFailures++;
+            }
+        }
+
+        if (consecutiveFailures >= 3) {
+            const blockMsg = `Circuit Breaker Triggered: The action '${decision.action}' has failed 3 consecutive times. Agent paused to protect gas. Please check your vault balance or fix the issue before resuming.`;
+            console.warn(`[runtime][${agent.tokenId}] ${blockMsg}`);
+
+            await agent.memory.store({
+                type: "blocked",
+                action: decision.action,
+                params: decision.params,
+                result: { success: false, error: blockMsg },
+                reasoning: "Circuit breaker condition met",
+                timestamp: new Date(),
+            });
+
+            return {
+                acted: false,
+                action: "wait",
+                reasoning: "Circuit breaker triggered due to consecutive failures. Hardware/policy intervention required.",
+                message: blockMsg,
+                blocked: true,
+                blockReason: blockMsg,
+                // Do not mark done, keep goal so user can resume once fixed
+            };
+        }
+    }
+
     // ───── 4. Encode: find action and encode to payload ─────
     const actionModule = agent.actions.find(a => a.name === decision.action);
     if (!actionModule) {

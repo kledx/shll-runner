@@ -21,6 +21,8 @@ export interface TokenBalance {
 
 /** Snapshot of the agent's environment at a point in time */
 export interface Observation {
+    /** The agent's vault address */
+    vaultAddress: Address;
     /** Vault token balances */
     vault: TokenBalance[];
     /** Native balance (BNB) */

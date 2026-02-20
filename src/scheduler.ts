@@ -272,7 +272,8 @@ export async function runSingleToken(
         // (Removed "approve" so multi-step approve->swap workflows can continue)
         const ONE_SHOT_ACTIONS = ["swap", "wrap"];
         const isOneShot = ONE_SHOT_ACTIONS.includes(result.action);
-        const shouldDone = result.done || (result.acted && isOneShot);
+        // Force done for one-shot TX actions ONLY IF LLM did not explicitly return done: false
+        const shouldDone = result.done !== false && (result.done === true || (result.acted && isOneShot));
 
         if (shouldDone) {
             await store.clearTradingGoal(tokenId);

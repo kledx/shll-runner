@@ -27,7 +27,7 @@ const TRADE_KEYWORDS = [
     "swap", "buy", "sell", "trade", "convert",
     "approve", "wrap", "unwrap", "transfer",
     "exchange", "send", "spend", "invest",
-    "long", "short", "dca",
+    "long", "short",
     // Chinese
     "买", "卖", "交换", "兑换", "转换",
     "交易", "发送", "投资", "购买",

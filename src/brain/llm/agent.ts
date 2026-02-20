@@ -254,7 +254,7 @@ export class LLMBrain implements IBrain {
             "  - Any request that does NOT require ongoing monitoring → done: true",
             "- Set `done: false` (or omit) for tasks that require ONGOING monitoring or repeated checks:",
             "  - Conditional orders: 'buy when BNB drops below $300' → wait + nextCheckMs",
-            "  - Recurring tasks: 'DCA 0.01 BNB into USDT every hour' → wait + nextCheckMs",
+            "  - Recurring tasks: 'Buy 0.01 BNB automatically every hour' → wait + nextCheckMs",
             "  - Active trading sessions: 'trade actively for the next hour' → wait + nextCheckMs",
             "- When waiting, set `nextCheckMs` to suggest re-check interval:",
             "  - Active trading: 60000 (1 min)",
@@ -310,11 +310,10 @@ export class LLMBrain implements IBrain {
                 description: allowanceAction.description,
                 inputSchema: z.object({
                     token: z.string().describe("ERC20 token contract address"),
-                    owner: z.string().describe("Token owner address (agent vault)"),
                     spender: z.string().describe("Spender address (e.g. PancakeSwap router)"),
                 }),
-                execute: async ({ token, owner, spender }: { token: string; owner: string; spender: string }) => {
-                    const result = await allowanceAction.execute!({ token, owner, spender });
+                execute: async ({ token, spender }: { token: string; spender: string }) => {
+                    const result = await allowanceAction.execute!({ token, owner: obs.vaultAddress, spender });
                     return result.success ? result.data : { error: result.error };
                 },
             });

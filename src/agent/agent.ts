@@ -45,7 +45,7 @@ export interface Agent {
 
 /** Blueprint defines how to assemble an Agent from its agentType */
 export interface AgentBlueprint {
-    /** Brain type identifier: "rule:dca" | "rule:hotToken" | "llm" */
+    /** Brain type identifier: "rule:hotToken" | "llm" */
     brain: string;
     /** Action module names to include: ["swap", "approve", "analytics", ...] */
     actions: string[];

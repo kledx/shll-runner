@@ -3,7 +3,7 @@
  *
  * Takes observation + memories + available actions → produces a Decision.
  * Two implementation families:
- *   - RuleBrain: deterministic logic (DCA, hot token tracking)
+ *   - RuleBrain: deterministic logic (hot token tracking)
  *   - LLMBrain: AI reasoning via LLM (ReAct loop)
  */
 

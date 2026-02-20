@@ -227,7 +227,7 @@ export class SoftPolicyEngine implements IGuardrails {
         // Sum of execution tx values from agent_memory today.
         // Different actions store the amount under different field names:
         //   - runtime injects 'txValue' (ActionPayload.value) into params
-        //   - fallback: 'amountIn' (DCA/swap), 'value' (legacy)
+        //   - fallback: 'amountIn' (swap), 'value' (legacy)
         const result = await this.pool.query(
             `SELECT COALESCE(SUM(
                 COALESCE(

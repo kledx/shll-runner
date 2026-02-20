@@ -236,20 +236,22 @@ export function startApiServer(ctx: ApiServerContext): void {
 
                 writeJson(res, 200, { ok: true, strategy: record });
 
-                // Fire-and-forget: trigger immediate agent cycle if tradingGoal was set
-                if (goal && ctx.schedulerCtx) {
+                // Trigger immediate agent cycle if tradingGoal was set, and always invalidate cache
+                if (ctx.schedulerCtx) {
                     const tid = BigInt(payload.tokenId);
 
-                    // Reset blocked backoff state so the new instruction gets a fresh start
-                    resetBlockedCount(tid);
-
-                    // Stop old cached agent so runtime rebuilds with new tradingGoal
+                    // Stop old cached agent so runtime rebuilds with new strategy parameters
                     ctx.schedulerCtx.agentManager.stopAgent(tid);
 
-                    log.info(`[API] Triggering immediate cycle for token ${tid.toString()} (blocked counter reset)`);
-                    void runSingleToken(tid, ctx.schedulerCtx, { skipCadenceCheck: true }).catch(
-                        (err) => log.error(`[API] Immediate trigger error for ${tid.toString()}:`, err instanceof Error ? err.message : err),
-                    );
+                    if (goal) {
+                        // Reset blocked backoff state so the new instruction gets a fresh start
+                        resetBlockedCount(tid);
+
+                        log.info(`[API] Triggering immediate cycle for token ${tid.toString()} (blocked counter reset)`);
+                        void runSingleToken(tid, ctx.schedulerCtx, { skipCadenceCheck: true }).catch(
+                            (err) => log.error(`[API] Immediate trigger error for ${tid.toString()}:`, err instanceof Error ? err.message : err),
+                        );
+                    }
                 }
                 return;
             }
