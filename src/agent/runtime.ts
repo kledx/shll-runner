@@ -87,6 +87,21 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
 
     // If brain says wait, store memory and return
     if (decision.action === "wait") {
+        // Only trust LLM's "blocked" signal for provable, critical conditions.
+        // All other "blocked" reasons (policy guesses, fabricated errors) are demoted to normal wait.
+        // This prevents the LLM from self-blocking with invented reasons.
+        const TRUSTED_BLOCK_PATTERNS = [
+            /vault.*no fund|balance.*0|no.*token/i,     // provably empty vault
+            /no.*bnb.*gas|gas.*0|insufficient.*gas/i,   // provably no gas
+        ];
+        const llmBlocked = decision.blocked ?? false;
+        const blockReason = decision.blockReason ?? "";
+        const isTrustedBlock = llmBlocked && TRUSTED_BLOCK_PATTERNS.some(p => p.test(blockReason));
+
+        if (llmBlocked && !isTrustedBlock) {
+            console.warn(`[runtime] Demoting LLM blocked to normal wait — untrusted reason: ${blockReason}`);
+        }
+
         await agent.memory.store({
             type: "decision",
             action: "wait",
@@ -98,8 +113,8 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             action: "wait",
             reasoning: decision.reasoning,
             message: decision.message,
-            blocked: decision.blocked ?? false,
-            blockReason: decision.blocked ? decision.blockReason : undefined,
+            blocked: isTrustedBlock,
+            blockReason: isTrustedBlock ? blockReason : undefined,
             done: decision.done,
             nextCheckMs: decision.nextCheckMs,
         };
