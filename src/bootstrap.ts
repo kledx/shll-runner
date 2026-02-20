@@ -25,6 +25,7 @@ import { createApproveAction } from "./actions/approve.js";
 import { createWrapAction } from "./actions/wrap.js";
 import { createAnalyticsAction } from "./actions/analytics.js";
 import { createPortfolioAction } from "./actions/portfolio.js";
+import { createAllowanceAction } from "./actions/allowance.js";
 import { SoftPolicyEngine } from "./guardrails/softPolicy.js";
 import { HardPolicyGuard, CombinedGuardrails, type HardPolicyConfig } from "./guardrails/hardPolicy.js";
 
@@ -166,6 +167,7 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
     registerAction("wrap", () => createWrapAction(config.wbnbAddress));
     registerAction("analytics", createAnalyticsAction);
     registerAction("portfolio", createPortfolioAction);
+    registerAction("allowance", createAllowanceAction);
 
     // ── Guardrails (Soft + Hard) ───────────────────────
     const hardPolicyConfig: HardPolicyConfig = {

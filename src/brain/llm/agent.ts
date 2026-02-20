@@ -201,12 +201,12 @@ export class LLMBrain implements IBrain {
             "",
             "## Two-Step Swap Workflow (CRITICAL)",
             "- Each cycle can only execute ONE on-chain action. For ERC20-to-token swaps, you MUST do TWO separate cycles:",
-            "  1. FIRST cycle: call `approve` — approve the DEX router to spend your tokenIn (e.g. USDT)",
-            "     params: { token: tokenIn address, spender: router address }",
-            "  2. SECOND cycle: call `swap` — execute the actual swap",
-            "     params: { router, tokenIn, tokenOut, amountIn, minOut }",
+            "  1. FIRST: call `get_allowance` tool to check if token is already approved for the router",
+            "     - If allowance >= amountIn → SKIP approve, go directly to swap",
+            "     - If allowance < amountIn → call `approve` action first",
+            "  2. After approve completes, set done: false and nextCheckMs: 10000 so the swap follows in ~10s",
+            "  3. On the NEXT cycle, call `get_allowance` again to confirm, then call `swap`",
             "- If swapping native BNB (tokenIn = 0x0000...0000), you do NOT need approve — go directly to swap.",
-            "- After calling approve, set done: false and nextCheckMs: 10000 so the swap follows in ~10 seconds.",
             "- In your message to the user after approve, tell them: 'Approval done, now executing the swap...'",
             "  If you cannot estimate the output, use get_market_data first, then calculate minOut.",
             "- For approve: spender must be the PancakeSwap V2 Router. Other addresses will be rejected.",
@@ -271,39 +271,56 @@ export class LLMBrain implements IBrain {
         obs: Observation,
     ) {
         // Build tool definitions from read-only actions
-        // Using direct object literals to avoid complex AI SDK generic issues
         const readonlyActions = actions.filter(a => a.readonly && a.execute);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tools: Record<string, any> = {};
 
         const marketDataAction = readonlyActions.find(a => a.name === "get_market_data");
-        const portfolioAction = readonlyActions.find(a => a.name === "get_portfolio");
+        if (marketDataAction) {
+            tools.get_market_data = tool({
+                description: marketDataAction.description,
+                inputSchema: z.object({
+                    tokenAddress: z.string().describe("Token contract address (0x...)"),
+                }),
+                execute: async ({ tokenAddress }: { tokenAddress: string }) => {
+                    const result = await marketDataAction.execute!({ tokenAddress });
+                    return result.success ? result.data : { error: result.error };
+                },
+            });
+        }
 
-        return {
-            ...(marketDataAction ? {
-                get_market_data: tool({
-                    description: marketDataAction.description,
-                    inputSchema: z.object({
-                        tokenAddress: z.string().describe("Token contract address (0x...)"),
-                    }),
-                    execute: async ({ tokenAddress }) => {
-                        const result = await marketDataAction.execute!({ tokenAddress });
-                        return result.success ? result.data : { error: result.error };
-                    },
+        const portfolioAction = readonlyActions.find(a => a.name === "get_portfolio");
+        if (portfolioAction) {
+            tools.get_portfolio = tool({
+                description: portfolioAction.description,
+                inputSchema: z.object({}),
+                execute: async () => {
+                    const result = await portfolioAction.execute!({
+                        __vaultTokens: obs.vault,
+                        __nativeBalance: obs.nativeBalance.toString(),
+                    });
+                    return result.success ? result.data : { error: result.error };
+                },
+            });
+        }
+
+        const allowanceAction = readonlyActions.find(a => a.name === "get_allowance");
+        if (allowanceAction) {
+            tools.get_allowance = tool({
+                description: allowanceAction.description,
+                inputSchema: z.object({
+                    token: z.string().describe("ERC20 token contract address"),
+                    owner: z.string().describe("Token owner address (agent vault)"),
+                    spender: z.string().describe("Spender address (e.g. PancakeSwap router)"),
                 }),
-            } : {}),
-            ...(portfolioAction ? {
-                get_portfolio: tool({
-                    description: portfolioAction.description,
-                    inputSchema: z.object({}),
-                    execute: async () => {
-                        const result = await portfolioAction.execute!({
-                            __vaultTokens: obs.vault,
-                            __nativeBalance: obs.nativeBalance.toString(),
-                        });
-                        return result.success ? result.data : { error: result.error };
-                    },
-                }),
-            } : {}),
-        };
+                execute: async ({ token, owner, spender }: { token: string; owner: string; spender: string }) => {
+                    const result = await allowanceAction.execute!({ token, owner, spender });
+                    return result.success ? result.data : { error: result.error };
+                },
+            });
+        }
+
+        return tools;
     }
 
     /** Resolve provider name to base URL */
