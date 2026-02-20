@@ -48,6 +48,12 @@ export interface ExecutionContext {
     actionName?: string;
     /** Total spend amount in wei (includes ERC20 amountIn, not just native value) */
     spendAmount?: bigint;
+    /** Token addresses involved in this action (e.g. [tokenIn, tokenOut] for swap) */
+    actionTokens?: string[];
+    /** Swap minOut in wei — for slippage checking */
+    minOut?: bigint;
+    /** Swap amountIn in wei — for slippage checking */
+    amountIn?: bigint;
 }
 
 // ═══════════════════════════════════════════════════════

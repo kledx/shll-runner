@@ -121,6 +121,51 @@ export class SoftPolicyEngine implements IGuardrails {
             }
         }
 
+        // 6. Allowed tokens check — swap/approve tokens must be in whitelist
+        if (config.allowedTokens.length > 0 && context.actionTokens && context.actionTokens.length > 0) {
+            const allowed = new Set(config.allowedTokens.map(t => t.toLowerCase()));
+            const ZERO = "0x0000000000000000000000000000000000000000";
+            for (const token of context.actionTokens) {
+                // Skip native BNB (address(0)) — always allowed
+                if (token === ZERO) continue;
+                if (!allowed.has(token)) {
+                    violations.push({
+                        policy: "allowedTokens",
+                        message: `Token ${token} is not in your allowed tokens list`,
+                    });
+                }
+            }
+        }
+
+        // 7. Blocked tokens check — reject if any token is blacklisted
+        if (config.blockedTokens.length > 0 && context.actionTokens && context.actionTokens.length > 0) {
+            const blocked = new Set(config.blockedTokens.map(t => t.toLowerCase()));
+            for (const token of context.actionTokens) {
+                if (blocked.has(token)) {
+                    violations.push({
+                        policy: "blockedTokens",
+                        message: `Token ${token} is in your blocked tokens list`,
+                    });
+                }
+            }
+        }
+
+        // 8. Max slippage check — validates minOut implies acceptable slippage
+        //    Slippage = 1 - (minOut / amountIn). If > maxSlippageBps, reject.
+        //    NOTE: this is a rough check since tokenIn/tokenOut may have different decimals.
+        //    It's mainly useful when both tokens have 18 decimals (e.g. BNB/WBNB swaps).
+        if (config.maxSlippageBps > 0 && context.amountIn && context.minOut && context.amountIn > 0n) {
+            // Slippage in basis points: (1 - minOut/amountIn) * 10000
+            // To avoid float: slippageBps = (amountIn - minOut) * 10000 / amountIn
+            const slippageBps = Number((context.amountIn - context.minOut) * 10000n / context.amountIn);
+            if (slippageBps > config.maxSlippageBps) {
+                violations.push({
+                    policy: "maxSlippageBps",
+                    message: `Implied slippage ${slippageBps}bps exceeds max ${config.maxSlippageBps}bps`,
+                });
+            }
+        }
+
         return {
             ok: violations.length === 0,
             violations,
