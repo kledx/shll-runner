@@ -51,10 +51,27 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const WBNB_ADDRESS = process.env.WBNB_ADDRESS || "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
 const DEFAULT_DEADLINE_OFFSET = 20 * 60; // 20 minutes
 
-// SECURITY: known DEX routers. swap target must be one of these.
+// SECURITY: platform-known DEX routers.
+// Includes all legitimate DEXes that appear in frontend KNOWN_DEXES.
+// This is a safety net against completely unknown contracts.
+// User SoftPolicy (allowed_dexes in DB) further restricts within this set.
 const ROUTER_ADDRESS = process.env.ROUTER_ADDRESS || "0x10ED43C718714eb63d5aA57B78B54704E256024E";
+const PLATFORM_KNOWN_ROUTERS = [
+    ROUTER_ADDRESS,
+    // PancakeSwap V2 mainnet
+    "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+    // PancakeSwap V3 mainnet
+    "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
+    // PancakeSwap V2 testnet
+    "0xD99D1c33F9fC3444f8101754aBC46c52416550D1",
+    // PancakeSwap V3 testnet
+    "0x1b81D678ffb9C0263b24A97847620C99d213eB14",
+    // BiSwap testnet
+    "0x3380aE82e39E42Ca34EbEd69aF67fAa0683Bb5c1",
+];
+
 const ALLOWED_ROUTERS: Set<string> = new Set(
-    [ROUTER_ADDRESS, ...(process.env.EXTRA_ALLOWED_ROUTERS?.split(",") || [])]
+    [...PLATFORM_KNOWN_ROUTERS, ...(process.env.EXTRA_ALLOWED_ROUTERS?.split(",") || [])]
         .map(a => a.trim().toLowerCase())
         .filter(Boolean),
 );
