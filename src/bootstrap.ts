@@ -155,7 +155,7 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
             provider: process.env.LLM_PROVIDER || llmConfig.provider,
             model: process.env.LLM_MODEL || llmConfig.model,
             apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || llmConfig.apiKey,
-            maxStepsPerRun: Number(process.env.LLM_MAX_STEPS) || llmConfig.maxStepsPerRun || 3,
+            maxStepsPerRun: Number(process.env.LLM_MAX_STEPS) || llmConfig.maxStepsPerRun || 5,
         };
 
         return new LLMBrain(mergedConfig);
