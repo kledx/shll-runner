@@ -36,7 +36,7 @@ import {
     getSignalSyncState,
     type SignalSyncConfig,
 } from "../market/signalSync.js";
-import { getLastLoopAt, runSingleToken, type SchedulerContext } from "../scheduler.js";
+import { getLastLoopAt, runSingleToken, resetBlockedCount, type SchedulerContext } from "../scheduler.js";
 
 // ═══════════════════════════════════════════════════════
 //                  Server Config
@@ -239,7 +239,14 @@ export function startApiServer(ctx: ApiServerContext): void {
                 // Fire-and-forget: trigger immediate agent cycle if tradingGoal was set
                 if (goal && ctx.schedulerCtx) {
                     const tid = BigInt(payload.tokenId);
-                    log.info(`[API] Triggering immediate cycle for token ${tid.toString()}`);
+
+                    // Reset blocked backoff state so the new instruction gets a fresh start
+                    resetBlockedCount(tid);
+
+                    // Stop old cached agent so runtime rebuilds with new tradingGoal
+                    ctx.schedulerCtx.agentManager.stopAgent(tid);
+
+                    log.info(`[API] Triggering immediate cycle for token ${tid.toString()} (blocked counter reset)`);
                     void runSingleToken(tid, ctx.schedulerCtx, { skipCadenceCheck: true }).catch(
                         (err) => log.error(`[API] Immediate trigger error for ${tid.toString()}:`, err instanceof Error ? err.message : err),
                     );

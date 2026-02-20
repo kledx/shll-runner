@@ -51,6 +51,11 @@ export function getLastLoopAt(): number {
     return lastLoopAt;
 }
 
+/** Clear blocked backoff counter for a token (called when user sends a new instruction) */
+export function resetBlockedCount(tokenId: bigint): void {
+    blockedCounts.delete(tokenId.toString());
+}
+
 // ═══════════════════════════════════════════════════════
 //                  Scheduler Loop
 // ═══════════════════════════════════════════════════════
