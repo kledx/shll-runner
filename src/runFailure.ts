@@ -184,7 +184,11 @@ export function classifyFailureFromBlockedReason(reason: string): RunFailureInfo
         };
     }
 
-    if (text.includes("execution reverted")) {
+    if (
+        text.includes("execution reverted") ||
+        text.includes("executionfailed()") ||
+        text.includes("error: executionfailed()")
+    ) {
         return {
             failureCategory: "business_rejected",
             errorCode: "BUSINESS_CHAIN_REVERTED",

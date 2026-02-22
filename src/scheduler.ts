@@ -460,6 +460,30 @@ export async function runSingleToken(
             runMode: shadowMode ? "shadow" : "primary",
         });
 
+        if (failure.failureCategory === "business_rejected") {
+            const key = tokenId.toString();
+            const count = (blockedCounts.get(key) ?? 0) + 1;
+            blockedCounts.set(key, count);
+
+            const BLOCKED_BACKOFF_MS = 5 * 60 * 1000;
+            if (count >= MAX_BLOCKED_RETRIES) {
+                await store.clearTradingGoal(tokenId);
+                agentManager.stopAgent(tokenId);
+                blockedCounts.delete(key);
+                log.warn(
+                    `[V3][${key}] Auto-paused after ${count} consecutive business failures: ${userMessage}`,
+                );
+                return true;
+            }
+
+            const nextCheckAt = new Date(Date.now() + BLOCKED_BACKOFF_MS);
+            await store.updateNextCheckAt(tokenId, nextCheckAt);
+            log.info(
+                `[V3][${key}] Business failure (${count}/${MAX_BLOCKED_RETRIES}), backoff ${BLOCKED_BACKOFF_MS / 1000}s`,
+            );
+            return true;
+        }
+
         return false;
     } finally {
         if (acquiredDbLock) {
