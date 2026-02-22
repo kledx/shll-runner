@@ -8,6 +8,7 @@
 import { createPublicClient, http, erc20Abi } from "viem";
 import { bsc, bscTestnet } from "viem/chains";
 import type { IAction, ActionPayload, ToolResult } from "./interface.js";
+import { getChainIdFromEnv } from "../chainDefaults.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 
@@ -33,9 +34,12 @@ export function createAllowanceAction(): IAction {
                 const owner = params.owner as string;
                 const spender = params.spender as string;
 
-                const chainId = parseInt(process.env.CHAIN_ID || "56");
+                const chainId = getChainIdFromEnv();
                 const chain = chainId === 56 ? bsc : bscTestnet;
-                const rpcUrl = process.env.RPC_URL || "https://bsc-dataseed1.binance.org";
+                const defaultRpc = chainId === 56
+                    ? "https://bsc-dataseed1.binance.org"
+                    : "https://data-seed-prebsc-1-s1.binance.org:8545";
+                const rpcUrl = process.env.RPC_URL || defaultRpc;
 
                 const client = createPublicClient({
                     chain,

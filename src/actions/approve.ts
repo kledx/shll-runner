@@ -11,6 +11,7 @@
 
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import type { IAction, ActionPayload } from "./interface.js";
+import { getChainAddressBook, normalizeKnownAddressForChain } from "../chainDefaults.js";
 
 const ERC20_APPROVE_ABI = [
     {
@@ -32,8 +33,9 @@ const MAX_UINT256 = BigInt(
 // SECURITY: only platform-known addresses are allowed as spenders.
 // Includes all legitimate DEX routers + WBNB.
 // This is a safety net — user SoftPolicy further restricts within this set.
-const ROUTER_ADDRESS = process.env.ROUTER_ADDRESS || "0x10ED43C718714eb63d5aA57B78B54704E256024E";
-const WBNB_ADDRESS = process.env.WBNB_ADDRESS || "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
+const CHAIN_DEFAULTS = getChainAddressBook();
+const ROUTER_ADDRESS = process.env.ROUTER_ADDRESS || CHAIN_DEFAULTS.router;
+const WBNB_ADDRESS = process.env.WBNB_ADDRESS || CHAIN_DEFAULTS.wbnb;
 
 const PLATFORM_KNOWN_SPENDERS = [
     ROUTER_ADDRESS,
@@ -75,8 +77,10 @@ export function createApproveAction(): IAction {
         },
 
         encode(params: Record<string, unknown>): ActionPayload {
-            const token = params.token as string;
-            const spender = params.spender as string;
+            const tokenRaw = params.token as string;
+            const spenderRaw = params.spender as string;
+            const token = normalizeKnownAddressForChain(tokenRaw);
+            const spender = normalizeKnownAddressForChain(spenderRaw);
             const amount = params.amount
                 ? BigInt(params.amount as string)
                 : MAX_UINT256;

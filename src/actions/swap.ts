@@ -13,6 +13,7 @@
 
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import type { IAction, ActionPayload } from "./interface.js";
+import { getChainAddressBook, normalizeKnownAddressForChain } from "../chainDefaults.js";
 
 // ── ABI fragments ──────────────────────────────────────
 
@@ -48,14 +49,15 @@ const SWAP_EXACT_ETH_ABI = [
 ] as const;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-const WBNB_ADDRESS = process.env.WBNB_ADDRESS || "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
+const CHAIN_DEFAULTS = getChainAddressBook();
+const WBNB_ADDRESS = process.env.WBNB_ADDRESS || CHAIN_DEFAULTS.wbnb;
 const DEFAULT_DEADLINE_OFFSET = 20 * 60; // 20 minutes
 
 // SECURITY: platform-known DEX routers.
 // Includes all legitimate DEXes that appear in frontend KNOWN_DEXES.
 // This is a safety net against completely unknown contracts.
 // User SoftPolicy (allowed_dexes in DB) further restricts within this set.
-const ROUTER_ADDRESS = process.env.ROUTER_ADDRESS || "0x10ED43C718714eb63d5aA57B78B54704E256024E";
+const ROUTER_ADDRESS = process.env.ROUTER_ADDRESS || CHAIN_DEFAULTS.router;
 const PLATFORM_KNOWN_ROUTERS = [
     ROUTER_ADDRESS,
     // PancakeSwap V2 mainnet
@@ -98,16 +100,26 @@ export function createSwapAction(): IAction {
         },
 
         encode(params: Record<string, unknown>): ActionPayload {
-            const router = params.router as string;
-            const tokenIn = params.tokenIn as string;
-            const tokenOut = params.tokenOut as string;
+            const routerRaw = params.router as string;
+            const tokenInRaw = params.tokenIn as string;
+            const tokenOutRaw = params.tokenOut as string;
             const amountInRaw = params.amountIn as string | undefined;
 
             // Validate required params before BigInt conversion
-            if (!router) throw new Error("swap: missing required param 'router'");
-            if (!tokenIn) throw new Error("swap: missing required param 'tokenIn'");
-            if (!tokenOut) throw new Error("swap: missing required param 'tokenOut'");
+            if (!routerRaw) throw new Error("swap: missing required param 'router'");
+            if (!tokenInRaw) throw new Error("swap: missing required param 'tokenIn'");
+            if (!tokenOutRaw) throw new Error("swap: missing required param 'tokenOut'");
             if (!amountInRaw) throw new Error("swap: missing required param 'amountIn'");
+
+            // Canonicalize known BSC addresses to current chain (56/97),
+            // so model outputs won't mix mainnet/testnet infra addresses.
+            const router = normalizeKnownAddressForChain(routerRaw);
+            const tokenIn = tokenInRaw.toLowerCase() === ZERO_ADDRESS
+                ? ZERO_ADDRESS
+                : normalizeKnownAddressForChain(tokenInRaw);
+            const tokenOut = tokenOutRaw.toLowerCase() === ZERO_ADDRESS
+                ? ZERO_ADDRESS
+                : normalizeKnownAddressForChain(tokenOutRaw);
 
             // SECURITY (MED-2): validate router against whitelist
             if (!ALLOWED_ROUTERS.has(router.toLowerCase())) {

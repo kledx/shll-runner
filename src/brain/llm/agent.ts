@@ -26,6 +26,7 @@ import type { IAction } from "../../actions/interface.js";
 import type { LLMConfig } from "../../agent/agent.js";
 import { buildUserPrompt } from "./prompt.js";
 import { sanitizeForUser } from "../../errors.js";
+import { getChainAddressBook, getChainIdFromEnv } from "../../chainDefaults.js";
 
 // ═══════════════════════════════════════════════════════
 //                   Decision Schema
@@ -162,24 +163,25 @@ export class LLMBrain implements IBrain {
     /** Build system prompt — tools are provided via API, not listed in prompt */
     private buildSystemPrompt(actions: IAction[]): string {
         const writeActions = actions.filter(a => !a.readonly).map(a => a.name);
-        const wbnb = process.env.WBNB_ADDRESS || "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
-        const router = process.env.ROUTER_ADDRESS || "0x10ED43C718714eb63d5aA57B78B54704E256024E";
-        const chainId = process.env.CHAIN_ID || "56";
-        const isMainnet = chainId === "56";
-        const usdt = isMainnet
-            ? "0x55d398326f99059fF775485246999027B3197955"
-            : "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd";
+        const chainId = getChainIdFromEnv();
+        const chainDefaults = getChainAddressBook(chainId);
+        const wbnb = process.env.WBNB_ADDRESS || chainDefaults.wbnb;
+        const router = process.env.ROUTER_ADDRESS || chainDefaults.router;
+        const usdt = chainDefaults.usdt;
+        const busd = chainDefaults.busd;
         const parts: string[] = [
             this.config.systemPrompt,
             "",
             "## BSC Infrastructure",
+            `- Chain ID: ${chainId}`,
             `- PancakeSwap V2 Router: ${router}`,
             `- WBNB: ${wbnb}`,
             `- Native BNB (for tokenIn): 0x0000000000000000000000000000000000000000`,
             `- USDT (BSC): ${usdt}`,
-            `- BUSD (BSC): 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56`,
+            `- BUSD (BSC): ${busd}`,
             "",
             "## Instructions",
+            "- NEVER mix BSC mainnet and testnet addresses in the same action.",
             "- ASSESS the user's intent before calling tools. Ask yourself: does this request need real-time on-chain data?",
             "  1. NEEDS ON-CHAIN DATA → call tools first:",
             "     - Trade requests (swap, buy, sell, convert) → get_portfolio + get_market_data",

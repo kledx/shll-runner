@@ -4,6 +4,16 @@
 
 // AgentNFA: execute(uint256 tokenId, (address target, uint256 value, bytes data) action)
 export const AgentNFAAbi = [
+    { type: "error", name: "ExecutionFailed", inputs: [] },
+    { type: "error", name: "Unauthorized", inputs: [] },
+    { type: "error", name: "LeaseExpired", inputs: [] },
+    {
+        type: "error",
+        name: "PolicyViolation",
+        inputs: [{ name: "reason", type: "string" }],
+    },
+    { type: "error", name: "AgentPaused", inputs: [{ name: "tokenId", type: "uint256" }] },
+    { type: "error", name: "AgentTerminated", inputs: [{ name: "tokenId", type: "uint256" }] },
     {
         type: "function",
         name: "execute",
