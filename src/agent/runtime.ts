@@ -168,6 +168,7 @@ export async function runAgentCycle(
         await agent.memory.store({
             type: "decision",
             action: "wait",
+            params: decisionParams,
             reasoning: decision.reasoning,
             timestamp: new Date(),
         });

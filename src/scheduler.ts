@@ -288,11 +288,25 @@ export async function runSingleToken(
         const minInterval = strategy?.minIntervalMs ?? config.pollIntervalMs;
 
         // If the agent successfully acted AND requests a fast follow-up (e.g. approve → swap),
-        // allow bypassing minInterval for multi-step workflows
+        // allow bypassing minInterval for multi-step workflows.
+        // Also allow short wait cadence for recurring conversational tasks.
         const FAST_FOLLOWUP_MIN = 10_000; // 10 seconds minimum for chained actions
-        const nextMs = (result.acted && result.nextCheckMs && result.nextCheckMs < minInterval)
-            ? Math.max(result.nextCheckMs, FAST_FOLLOWUP_MIN)
-            : Math.max(result.nextCheckMs ?? minInterval, minInterval);
+        const WAIT_CADENCE_MIN = 5_000; // 5 seconds minimum for recurring wait tasks
+        const hasNextCheck = typeof result.nextCheckMs === "number" && result.nextCheckMs >= 0;
+        const allowWaitCadenceBypass =
+            result.action === "wait" &&
+            result.done === false &&
+            hasNextCheck;
+        const allowTxFollowupBypass =
+            result.acted &&
+            hasNextCheck &&
+            result.nextCheckMs! < minInterval;
+
+        const nextMs = allowWaitCadenceBypass
+            ? Math.max(result.nextCheckMs!, WAIT_CADENCE_MIN)
+            : allowTxFollowupBypass
+                ? Math.max(result.nextCheckMs!, FAST_FOLLOWUP_MIN)
+                : Math.max(result.nextCheckMs ?? minInterval, minInterval);
 
         const nextCheckAt = new Date(Date.now() + nextMs);
         await store.updateNextCheckAt(tokenId, nextCheckAt);

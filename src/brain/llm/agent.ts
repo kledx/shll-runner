@@ -120,7 +120,8 @@ export class LLMBrain implements IBrain {
             // Parse the final text response into a Decision
             if (result.text) {
                 console.log(`  [LLM Raw] ${result.text.slice(0, 200)}`);
-                return parseDecision(result.text);
+                const parsed = parseDecision(result.text);
+                return this.applyCadenceFallback(parsed, memories);
             }
 
             // If no text (e.g. maxSteps exhausted on tool call), extract last tool result
@@ -140,24 +141,83 @@ export class LLMBrain implements IBrain {
                     done: true,
                 };
             }
-            return {
+            const fallback: Decision = {
                 action: "wait",
                 params: {},
                 reasoning: "Agent completed processing — no additional output",
                 confidence: 0,
             };
+            return this.applyCadenceFallback(fallback, memories);
         } catch (error) {
             const rawMessage = error instanceof Error ? error.message : "Unknown LLM error";
             console.error(`  [LLM Error] ${rawMessage}`);
             const userMessage = sanitizeForUser(rawMessage);
-            return {
+            const fallback: Decision = {
                 action: "wait",
                 params: {},
                 reasoning: `System error (details logged)`,
                 message: userMessage,
                 confidence: 0,
             };
+            return this.applyCadenceFallback(fallback, memories);
         }
+    }
+
+    private applyCadenceFallback(decision: Decision, memories: MemoryEntry[]): Decision {
+        const goal = this.config.tradingGoal ?? "";
+        const cadence = parseRecurringMessageIntent(goal);
+        if (!cadence) {
+            return decision;
+        }
+
+        const marker = `cadence:${cadence.signature}`;
+        const seenTimestamps = memories
+            .map((m) => {
+                const markerFromParams = typeof m.params?.__cadenceMarker === "string"
+                    ? m.params.__cadenceMarker
+                    : "";
+                if (markerFromParams !== marker) return null;
+                return m.timestamp.getTime();
+            })
+            .filter((v): v is number => typeof v === "number");
+
+        const now = Date.now();
+        const startedAt = seenTimestamps.length > 0 ? Math.min(...seenTimestamps) : now;
+        const elapsedMs = Math.max(0, now - startedAt);
+
+        if (elapsedMs >= cadence.durationMs) {
+            return {
+                ...decision,
+                action: "wait",
+                params: {
+                    ...(decision.params ?? {}),
+                    __cadenceMarker: marker,
+                },
+                message: cadence.doneMessage,
+                done: true,
+                nextCheckMs: undefined,
+                blocked: false,
+                blockReason: undefined,
+                reasoning: "Cadence task completed by runtime fallback.",
+                confidence: Math.max(decision.confidence ?? 0, 0.8),
+            };
+        }
+
+        return {
+            ...decision,
+            action: "wait",
+            params: {
+                ...(decision.params ?? {}),
+                __cadenceMarker: marker,
+            },
+            message: cadence.message,
+            done: false,
+            nextCheckMs: cadence.intervalMs,
+            blocked: false,
+            blockReason: undefined,
+            reasoning: "Cadence task active via runtime fallback.",
+            confidence: Math.max(decision.confidence ?? 0, 0.8),
+        };
     }
 
     /** Build system prompt — tools are provided via API, not listed in prompt */
@@ -192,6 +252,8 @@ export class LLMBrain implements IBrain {
             "     - Questions about the platform (what is SHLL, how to deposit, what can you do)",
             "     - Strategy explanations, safety policy questions",
             "     - General crypto / DeFi knowledge questions",
+            "     - EXCEPTION: recurring chat tasks (e.g. 'for 1 minute send hi every 5 seconds') are ongoing jobs.",
+            "       Use action='wait', done=false, nextCheckMs=<interval>, and message as the exact text to repeat.",
             "     - Error troubleshooting (use SHLL Platform Context below)",
             "- Use get_market_data to check token prices BEFORE making trade decisions.",
             "- Use get_portfolio to check your current vault holdings.",
@@ -441,4 +503,74 @@ function normalizeDecision(parsed: Record<string, unknown>): Decision {
         blocked: typeof parsed.blocked === "boolean" ? parsed.blocked : undefined,
         blockReason: typeof parsed.blockReason === "string" ? parsed.blockReason : undefined,
     };
+}
+
+type RecurringMessageIntent = {
+    intervalMs: number;
+    durationMs: number;
+    message: string;
+    doneMessage: string;
+    signature: string;
+};
+
+function parseRecurringMessageIntent(goal: string): RecurringMessageIntent | null {
+    const raw = goal.trim();
+    if (!raw) return null;
+
+    const intervalMs = parseIntervalMs(raw);
+    const durationMs = parseDurationMs(raw);
+    const message = parseRepeatedMessage(raw);
+
+    if (!intervalMs || !durationMs || !message) return null;
+    if (durationMs < intervalMs) return null;
+
+    const signature = `${intervalMs}:${durationMs}:${message.toLowerCase()}`;
+    return {
+        intervalMs: Math.max(5_000, intervalMs),
+        durationMs,
+        message,
+        doneMessage: `已完成：按要求每${Math.round(intervalMs / 1000)}秒发送“${message}”，持续${Math.round(durationMs / 1000)}秒。`,
+        signature,
+    };
+}
+
+function parseIntervalMs(text: string): number | null {
+    const zhSec = text.match(/每\s*(\d+)\s*秒/);
+    if (zhSec) return Number.parseInt(zhSec[1], 10) * 1000;
+    const zhMin = text.match(/每\s*(\d+)\s*分(?:钟)?/);
+    if (zhMin) return Number.parseInt(zhMin[1], 10) * 60_000;
+
+    const enSec = text.match(/every\s+(\d+)\s*seconds?/i);
+    if (enSec) return Number.parseInt(enSec[1], 10) * 1000;
+    const enMin = text.match(/every\s+(\d+)\s*minutes?/i);
+    if (enMin) return Number.parseInt(enMin[1], 10) * 60_000;
+    return null;
+}
+
+function parseDurationMs(text: string): number | null {
+    const zhMinA = text.match(/接下来\s*(\d+)\s*分(?:钟)?/);
+    if (zhMinA) return Number.parseInt(zhMinA[1], 10) * 60_000;
+    const zhMinB = text.match(/(?:持续|在)\s*(\d+)\s*分(?:钟)?(?:内)?/);
+    if (zhMinB) return Number.parseInt(zhMinB[1], 10) * 60_000;
+    const zhSec = text.match(/(?:持续|在)\s*(\d+)\s*秒(?:钟)?(?:内)?/);
+    if (zhSec) return Number.parseInt(zhSec[1], 10) * 1000;
+
+    const enMin = text.match(/for\s+(\d+)\s*minutes?/i);
+    if (enMin) return Number.parseInt(enMin[1], 10) * 60_000;
+    const enSec = text.match(/for\s+(\d+)\s*seconds?/i);
+    if (enSec) return Number.parseInt(enSec[1], 10) * 1000;
+    return null;
+}
+
+function parseRepeatedMessage(text: string): string | null {
+    const quoted = text.match(/[“"']([^”"']{1,120})[”"']/);
+    if (quoted) return quoted[1].trim();
+
+    const zh = text.match(/(?:发送|说|回复)(?:一条|一句|一次)?\s+([^\s，。,！!？?]{1,80})/);
+    if (zh) return zh[1].trim();
+
+    const en = text.match(/send\s+(?:a\s+message\s+)?([a-z0-9 _-]{1,80})/i);
+    if (en) return en[1].trim();
+
+    return null;
 }
