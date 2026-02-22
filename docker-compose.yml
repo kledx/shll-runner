@@ -5,6 +5,7 @@ services:
     container_name: agent-runner
     image: ghcr.io/kledx/shll-runner:latest
     restart: unless-stopped
+    pull_policy: always
     environment:
       # ─── Chain ───
       - RPC_URL=${RPC_URL}
