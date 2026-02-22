@@ -54,8 +54,38 @@ function parseChainId(raw: string | number | undefined): SupportedChainId {
     return n === 56 ? 56 : 97;
 }
 
+function parseChainIdStrict(raw: string | number | undefined): SupportedChainId | undefined {
+    const n = typeof raw === "number" ? raw : Number.parseInt(raw ?? "", 10);
+    if (n === 56) return 56;
+    if (n === 97) return 97;
+    return undefined;
+}
+
+function inferChainIdFromKnownInfra(): SupportedChainId | undefined {
+    const wbnb = (process.env.WBNB_ADDRESS || "").toLowerCase();
+    const router = (process.env.ROUTER_ADDRESS || "").toLowerCase();
+
+    const hasTestnetHint =
+        wbnb === TESTNET.wbnb.toLowerCase() ||
+        router === TESTNET.router.toLowerCase() ||
+        router === "0x1b81d678ffb9c0263b24a97847620c99d213eb14";
+    if (hasTestnetHint) return 97;
+
+    const hasMainnetHint =
+        wbnb === MAINNET.wbnb.toLowerCase() ||
+        router === MAINNET.router.toLowerCase() ||
+        router === "0x13f4ea83d0bd40e75c8222255bc855a974568dd4";
+    if (hasMainnetHint) return 56;
+
+    return undefined;
+}
+
 export function getChainIdFromEnv(): SupportedChainId {
-    return parseChainId(process.env.CHAIN_ID);
+    const inferred = inferChainIdFromKnownInfra();
+    const explicit = parseChainIdStrict(process.env.CHAIN_ID);
+    if (inferred != null) return inferred;
+    if (explicit != null) return explicit;
+    return 97;
 }
 
 export function getChainAddressBook(chainIdRaw: string | number = getChainIdFromEnv()): ChainAddressBook {
