@@ -103,6 +103,11 @@ function appendTrace(
     ];
 }
 
+function isInvalidTokenIdError(rawMessage: string): boolean {
+    const text = rawMessage.toLowerCase();
+    return text.includes("invalid token id") || text.includes("erc721: invalid token id");
+}
+
 function isShadowModeForToken(tokenId: bigint, config: SchedulerConfig): boolean {
     if (!config.shadowModeEnabled) return false;
     if (config.shadowModeTokenIds.length === 0) return true;
@@ -484,6 +489,18 @@ export async function runSingleToken(
             ),
             runMode: shadowMode ? "shadow" : "primary",
         });
+
+        // Token no longer exists on-chain (stale DB/autopilot record): disable permanently.
+        if (isInvalidTokenIdError(rawMessage)) {
+            const reason =
+                "On-chain token does not exist (ERC721: invalid token ID). Autopilot disabled by runner.";
+            await store.disable(tokenId, reason);
+            await store.clearTradingGoal(tokenId);
+            agentManager.stopAgent(tokenId);
+            blockedCounts.delete(tokenId.toString());
+            log.warn(`[V3][${tokenId.toString()}] Disabled autopilot: ${reason}`);
+            return true;
+        }
 
         if (failure.failureCategory === "business_rejected") {
             const key = tokenId.toString();

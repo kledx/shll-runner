@@ -38,6 +38,12 @@ function runFailureClassifierTests(): void {
     assert.equal(errRevert.failureCategory, "business_rejected");
     assert.equal(errRevert.errorCode, "BUSINESS_CHAIN_REVERTED");
 
+    const errInvalidToken = classifyFailureFromError(
+        "The contract function \"getState\" reverted with the following reason: ERC721: invalid token ID",
+    );
+    assert.equal(errInvalidToken.failureCategory, "business_rejected");
+    assert.equal(errInvalidToken.errorCode, "BUSINESS_CHAIN_REVERTED");
+
     const errUnknownAction = classifyFailureFromError("Unknown action: noop");
     assert.equal(errUnknownAction.failureCategory, "model_output_error");
     assert.equal(errUnknownAction.errorCode, "MODEL_UNKNOWN_ACTION");

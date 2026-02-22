@@ -236,6 +236,13 @@ export function classifyFailureFromError(rawMessage: string): RunFailureInfo {
         };
     }
 
+    if (text.includes("invalid token id") || text.includes("erc721: invalid token id")) {
+        return {
+            failureCategory: "business_rejected",
+            errorCode: "BUSINESS_CHAIN_REVERTED",
+        };
+    }
+
     if (text.includes("unauthorized") || text.includes("authorization issue")) {
         return {
             failureCategory: "business_rejected",
