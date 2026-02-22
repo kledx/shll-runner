@@ -27,6 +27,7 @@ import type { LLMConfig } from "../../agent/agent.js";
 import { buildUserPrompt } from "./prompt.js";
 import { sanitizeForUser } from "../../errors.js";
 import { getChainAddressBook, getChainIdFromEnv } from "../../chainDefaults.js";
+import * as cadenceRuntime from "./cadence.js";
 
 // ═══════════════════════════════════════════════════════
 //                   Decision Schema
@@ -165,60 +166,96 @@ export class LLMBrain implements IBrain {
 
     private applyCadenceFallback(decision: Decision, memories: MemoryEntry[]): Decision {
         const goal = this.config.tradingGoal ?? "";
-        const cadence = parseRecurringMessageIntent(goal);
-        if (!cadence) {
-            return decision;
-        }
+        const recurringCadence = cadenceRuntime.parseRecurringMessageIntent(goal);
+        if (recurringCadence) {
+            const marker = `cadence:${recurringCadence.signature}`;
+            const progress = cadenceRuntime.buildCadenceProgress({
+                marker,
+                intervalMs: recurringCadence.intervalMs,
+                durationMs: recurringCadence.durationMs,
+                memories,
+            });
 
-        const marker = `cadence:${cadence.signature}`;
-        const seenTimestamps = memories
-            .map((m) => {
-                const markerFromParams = typeof m.params?.__cadenceMarker === "string"
-                    ? m.params.__cadenceMarker
-                    : "";
-                if (markerFromParams !== marker) return null;
-                return m.timestamp.getTime();
-            })
-            .filter((v): v is number => typeof v === "number");
+            if (progress.completed) {
+                return {
+                    ...decision,
+                    action: "wait",
+                    params: cadenceRuntime.attachCadenceParams(decision.params, marker, "done", progress.startedAtMs),
+                    message: recurringCadence.doneMessage,
+                    done: true,
+                    nextCheckMs: undefined,
+                    blocked: false,
+                    blockReason: undefined,
+                    reasoning: "Cadence task completed by runtime fallback.",
+                    confidence: Math.max(decision.confidence ?? 0, 0.8),
+                };
+            }
 
-        const now = Date.now();
-        const windowStart = now - cadence.durationMs;
-        const recentSeen = seenTimestamps.filter((ts) => ts >= windowStart);
-        const startedAt = recentSeen.length > 0 ? Math.min(...recentSeen) : now;
-        const elapsedMs = Math.max(0, now - startedAt);
-
-        if (elapsedMs >= cadence.durationMs) {
             return {
                 ...decision,
                 action: "wait",
-                params: {
-                    ...(decision.params ?? {}),
-                    __cadenceMarker: marker,
-                },
-                message: cadence.doneMessage,
+                params: cadenceRuntime.attachCadenceParams(decision.params, marker, "active", progress.startedAtMs),
+                message: recurringCadence.message,
+                done: false,
+                nextCheckMs: recurringCadence.intervalMs,
+                blocked: false,
+                blockReason: undefined,
+                reasoning: "Cadence task active via runtime fallback.",
+                confidence: Math.max(decision.confidence ?? 0, 0.8),
+            };
+        }
+
+        const timedCadence = cadenceRuntime.parseTimedMonitoringIntent(goal);
+        if (!timedCadence) {
+            return decision;
+        }
+
+        const marker = `cadence:${timedCadence.signature}`;
+        const progress = cadenceRuntime.buildCadenceProgress({
+            marker,
+            intervalMs: timedCadence.intervalMs,
+            durationMs: timedCadence.durationMs,
+            memories,
+        });
+
+        if (progress.completed) {
+            if (decision.action !== "wait") {
+                return {
+                    ...decision,
+                    params: cadenceRuntime.attachCadenceParams(decision.params, marker, "done", progress.startedAtMs),
+                };
+            }
+            return {
+                ...decision,
+                action: "wait",
+                params: cadenceRuntime.attachCadenceParams(decision.params, marker, "done", progress.startedAtMs),
+                message: timedCadence.doneMessage,
                 done: true,
                 nextCheckMs: undefined,
                 blocked: false,
                 blockReason: undefined,
-                reasoning: "Cadence task completed by runtime fallback.",
-                confidence: Math.max(decision.confidence ?? 0, 0.8),
+                reasoning: "Timed monitoring window completed by runtime fallback.",
+                confidence: Math.max(decision.confidence ?? 0, 0.75),
+            };
+        }
+
+        if (decision.action === "wait") {
+            return {
+                ...decision,
+                params: cadenceRuntime.attachCadenceParams(decision.params, marker, "active", progress.startedAtMs),
+                message: decision.message ?? timedCadence.activeMessage,
+                done: false,
+                nextCheckMs: timedCadence.intervalMs,
+                blocked: decision.blocked ?? false,
+                blockReason: decision.blockReason,
+                reasoning: "Timed monitoring window active via runtime fallback.",
+                confidence: Math.max(decision.confidence ?? 0, 0.75),
             };
         }
 
         return {
             ...decision,
-            action: "wait",
-            params: {
-                ...(decision.params ?? {}),
-                __cadenceMarker: marker,
-            },
-            message: cadence.message,
-            done: false,
-            nextCheckMs: cadence.intervalMs,
-            blocked: false,
-            blockReason: undefined,
-            reasoning: "Cadence task active via runtime fallback.",
-            confidence: Math.max(decision.confidence ?? 0, 0.8),
+            params: cadenceRuntime.attachCadenceParams(decision.params, marker, "active", progress.startedAtMs),
         };
     }
 
