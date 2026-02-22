@@ -38,8 +38,9 @@ export function createWrapAction(wbnbAddress: Address): IAction {
             properties: {
                 direction: { type: "string", description: "Direction of wrapping", enum: ["wrap", "unwrap"] },
                 amount: { type: "string", description: "Amount in wei to wrap or unwrap" },
+                amountIn: { type: "string", description: "Alias of amount (for compatibility with swap-style outputs)" },
             },
-            required: ["direction", "amount"],
+            required: ["direction"],
         },
 
         encode(params: Record<string, unknown>): ActionPayload {

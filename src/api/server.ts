@@ -27,6 +27,7 @@ import {
     parseMarketSignalUpsertPayload,
     parseStrategyQuery,
     parseStrategyUpsertPayload,
+    parseShadowMetricsQuery,
     parseStatusQuery,
 } from "../validation.js";
 import { handleV3Routes } from "./router.js";
@@ -59,6 +60,9 @@ export interface ApiServerConfig {
     marketSignalSourceName: string;
     marketSignalSyncIntervalMs: number;
     marketSignalSourceTimeoutMs: number;
+    shadowModeEnabled: boolean;
+    shadowModeTokenIds: bigint[];
+    shadowExecuteTx: boolean;
 }
 
 export interface ApiServerContext {
@@ -533,6 +537,22 @@ export function startApiServer(ctx: ApiServerContext): void {
             }
 
             // ── Autopilots List ────────────────────────────
+            if (req.method === "GET" && url.pathname === "/shadow/metrics") {
+                const query = parseShadowMetricsQuery({
+                    tokenId: url.searchParams.get("tokenId") ?? undefined,
+                    sinceHours: url.searchParams.get("sinceHours") ?? undefined,
+                });
+                const report = await store.getShadowMetrics({
+                    tokenId: query.tokenId,
+                    sinceHours: query.sinceHours,
+                });
+                writeJson(res, 200, {
+                    ok: true,
+                    ...report,
+                });
+                return;
+            }
+
             if (req.method === "GET" && url.pathname === "/autopilots") {
                 writeJson(res, 200, {
                     ok: true,
@@ -575,6 +595,15 @@ export function startApiServer(ctx: ApiServerContext): void {
                         intervalMs: config.marketSignalSyncIntervalMs,
                         lastSyncAt: syncState.lastSyncAt || null,
                         lastError: syncState.lastSyncError,
+                    },
+                    shadowMode: {
+                        enabled: config.shadowModeEnabled,
+                        executeTx: config.shadowExecuteTx,
+                        tokenIds:
+                            config.shadowModeTokenIds.length > 0
+                                ? config.shadowModeTokenIds.map((x: bigint) => x.toString())
+                                : "all",
+                        metricsEndpoint: "/shadow/metrics",
                     },
                 });
                 return;

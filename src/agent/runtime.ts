@@ -1,68 +1,119 @@
 /**
- * Agent Runtime — The cognitive loop.
+ * Agent runtime cognitive loop.
  *
- * Drives a single execution cycle for an Agent:
- *   1. Perceive  — observe environment
- *   2. Remember  — recall past experiences
- *   3. Think     — brain decides action
- *   4. Encode    — convert decision to on-chain payload
- *   5. Check     — guardrails safety validation
- *   6. Act       — submit transaction (external responsibility)
- *   7. Learn     — store memory entry
- *
- * The runtime does NOT handle scheduling — that's the caller's job.
- * It focuses purely on orchestrating one cycle of the cognitive loop.
+ * Runs one cycle:
+ * observe -> propose -> plan -> validate -> simulate -> (ready for execute)
  */
 
 import type { Agent } from "./agent.js";
 import type { ActionPayload } from "../actions/interface.js";
 import type { ExecutionContext } from "../guardrails/interface.js";
-
-// ═══════════════════════════════════════════════════════
-//                   Run Result
-// ═══════════════════════════════════════════════════════
+import type { ExecutionTraceEntry, ShadowComparison } from "../types.js";
+import type { RunFailureCategory, RunErrorCode } from "../runFailure.js";
+import { classifyFailureFromPolicyViolation } from "../runFailure.js";
+import { buildExecutionPlan, buildLegacyExecutionPlan } from "./planner.js";
 
 export interface RunResult {
-    /** Whether the agent decided to act (vs wait) */
     acted: boolean;
-    /** Action name executed (or "wait") */
     action: string;
-    /** Brain reasoning */
     reasoning: string;
-    /** User-facing message from the LLM */
     message?: string;
-    /** Decision params (with injected vault/txValue) */
     params?: Record<string, unknown>;
-    /** Encoded payload (undefined if wait or blocked) */
     payload?: ActionPayload;
-    /** Whether guardrails blocked the action */
     blocked: boolean;
-    /** Block reason if blocked */
     blockReason?: string;
-    /** LLM signals task is complete — scheduler should disable autopilot */
     done?: boolean;
-    /** LLM-suggested ms until next check */
     nextCheckMs?: number;
+    failureCategory?: RunFailureCategory;
+    errorCode?: RunErrorCode;
+    executionTrace?: ExecutionTraceEntry[];
+    shadowComparison?: ShadowComparison;
 }
 
-// ═══════════════════════════════════════════════════════
-//                   Cognitive Loop
-// ═══════════════════════════════════════════════════════
+export interface RunCycleOptions {
+    shadowCompare?: boolean;
+    minActionConfidence?: number;
+}
 
-/**
- * Run one cognitive cycle for an agent.
- *
- * Returns a RunResult indicating what happened. The caller is responsible
- * for actually submitting the transaction if `result.payload` is set.
- *
- * @param agent The agent to run
- * @returns RunResult with decision, payload, and status
- */
-export async function runAgentCycle(agent: Agent): Promise<RunResult> {
-    // ───── 1. Perceive: observe environment ─────
+function addTrace(
+    entries: ExecutionTraceEntry[],
+    stage: ExecutionTraceEntry["stage"],
+    status: ExecutionTraceEntry["status"],
+    note?: string,
+    meta?: Record<string, unknown>,
+): void {
+    entries.push({
+        stage,
+        status,
+        at: new Date().toISOString(),
+        note,
+        meta,
+    });
+}
+
+function classifyTrustedWaitBlock(
+    blockReason: string,
+): { failureCategory: RunFailureCategory; errorCode: RunErrorCode } {
+    const text = blockReason.toLowerCase();
+    if (text.includes("gas") || text.includes("bnb") || text.includes("insufficient")) {
+        return {
+            failureCategory: "business_rejected",
+            errorCode: "BUSINESS_INSUFFICIENT_GAS",
+        };
+    }
+    return {
+        failureCategory: "business_rejected",
+        errorCode: "BUSINESS_INSUFFICIENT_BALANCE",
+    };
+}
+
+function buildShadowComparison(
+    primary: ReturnType<typeof buildExecutionPlan>,
+    legacy: ReturnType<typeof buildLegacyExecutionPlan>,
+): ShadowComparison {
+    const diverged =
+        primary.kind !== legacy.kind ||
+        primary.actionName !== legacy.actionName ||
+        primary.errorCode !== legacy.errorCode;
+    let reason: string | undefined;
+    if (diverged) {
+        const parts: string[] = [];
+        if (primary.kind !== legacy.kind) {
+            parts.push(`kind ${legacy.kind} -> ${primary.kind}`);
+        }
+        if (primary.actionName !== legacy.actionName) {
+            parts.push(`action ${legacy.actionName} -> ${primary.actionName}`);
+        }
+        if (primary.errorCode !== legacy.errorCode) {
+            parts.push(`error ${legacy.errorCode ?? "none"} -> ${primary.errorCode ?? "none"}`);
+        }
+        reason = parts.join("; ");
+    }
+    return {
+        primaryKind: primary.kind,
+        legacyKind: legacy.kind,
+        primaryAction: primary.actionName,
+        legacyAction: legacy.actionName,
+        primaryErrorCode: primary.errorCode,
+        legacyErrorCode: legacy.errorCode,
+        diverged,
+        reason,
+        at: new Date().toISOString(),
+    };
+}
+
+export async function runAgentCycle(
+    agent: Agent,
+    options?: RunCycleOptions,
+): Promise<RunResult> {
+    const executionTrace: ExecutionTraceEntry[] = [];
+
     const observation = await agent.perception.observe();
+    addTrace(executionTrace, "observe", "ok", "Observation collected", {
+        paused: observation.paused,
+        vaultTokenCount: observation.vault.length,
+    });
 
-    // Check if agent is paused on-chain
     if (observation.paused) {
         await agent.memory.store({
             type: "blocked",
@@ -70,36 +121,48 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             result: { success: false, error: "Agent is paused on-chain" },
             timestamp: new Date(),
         });
+        addTrace(executionTrace, "validate", "blocked", "Agent paused on-chain");
         return {
             acted: false,
             action: "wait",
             reasoning: "Agent is paused on-chain",
             blocked: true,
             blockReason: "Agent is paused on-chain",
+            failureCategory: "business_rejected",
+            errorCode: "BUSINESS_AGENT_PAUSED",
+            executionTrace,
         };
     }
 
-    // ───── 2. Remember: recall recent history ─────
     const memories = await agent.memory.recall(20);
-
-    // ───── 3. Think: brain decision ─────
     const decision = await agent.brain.think(observation, memories, agent.actions);
+    const decisionParams = decision.params ?? {};
+    const confidence = Number.isFinite(decision.confidence)
+        ? Math.max(0, Math.min(1, decision.confidence))
+        : 0;
+    const minActionConfidence = options?.minActionConfidence ?? 0;
+    const shadowCompareEnabled = options?.shadowCompare === true;
+    let shadowComparison: ShadowComparison | undefined;
+    addTrace(executionTrace, "propose", "ok", "Decision proposed", {
+        action: decision.action,
+        confidence,
+        minActionConfidence,
+    });
 
-    // If brain says wait, store memory and return
     if (decision.action === "wait") {
-        // Only trust LLM's "blocked" signal for provable, critical conditions.
-        // All other "blocked" reasons (policy guesses, fabricated errors) are demoted to normal wait.
-        // This prevents the LLM from self-blocking with invented reasons.
         const TRUSTED_BLOCK_PATTERNS = [
-            /vault.*no fund|balance.*0|no.*token/i,     // provably empty vault
-            /no.*bnb.*gas|gas.*0|insufficient.*gas/i,   // provably no gas
+            /vault.*no fund|balance.*0|no.*token/i,
+            /no.*bnb.*gas|gas.*0|insufficient.*gas/i,
         ];
         const llmBlocked = decision.blocked ?? false;
         const blockReason = decision.blockReason ?? "";
-        const isTrustedBlock = llmBlocked && TRUSTED_BLOCK_PATTERNS.some(p => p.test(blockReason));
+        const isTrustedBlock =
+            llmBlocked && TRUSTED_BLOCK_PATTERNS.some((p) => p.test(blockReason));
 
         if (llmBlocked && !isTrustedBlock) {
-            console.warn(`[runtime] Demoting LLM blocked to normal wait — untrusted reason: ${blockReason}`);
+            console.warn(
+                `[runtime] Demoting LLM blocked to normal wait, untrusted reason: ${blockReason}`,
+            );
         }
 
         await agent.memory.store({
@@ -108,6 +171,28 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             reasoning: decision.reasoning,
             timestamp: new Date(),
         });
+
+        addTrace(
+            executionTrace,
+            "plan",
+            isTrustedBlock ? "blocked" : "skip",
+            isTrustedBlock ? "Trusted blocked wait" : "No-op wait",
+        );
+
+        const trustedFailure = isTrustedBlock
+            ? classifyTrustedWaitBlock(blockReason)
+            : undefined;
+        if (shadowCompareEnabled) {
+            shadowComparison = {
+                primaryKind: isTrustedBlock ? "blocked" : "wait",
+                legacyKind: isTrustedBlock ? "blocked" : "wait",
+                primaryAction: "wait",
+                legacyAction: "wait",
+                diverged: false,
+                at: new Date().toISOString(),
+            };
+        }
+
         return {
             acted: false,
             action: "wait",
@@ -117,116 +202,206 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             blockReason: isTrustedBlock ? blockReason : undefined,
             done: decision.done,
             nextCheckMs: decision.nextCheckMs,
+            failureCategory: trustedFailure?.failureCategory,
+            errorCode: trustedFailure?.errorCode,
+            executionTrace,
+            shadowComparison,
         };
     }
 
-    // ───── 3.1 Circuit Breaker: Prevent infinite retry loops ─────
-    // If the LLM is attempting an action that has failed repeatedly, we step in to prevent gas griefing.
-    if (decision.action !== "wait") {
-        let consecutiveFailures = 0;
-        for (const m of memories) {
-            // Break chain if we see a successful execution or observation
-            if (m.type === "execution" && m.result?.success) break;
-            if (m.type === "observation") break;
-
-            // Count if this exact action failed/blocked recently
-            if (m.action === decision.action && (m.type === "blocked" || (m.type === "execution" && m.result?.success === false))) {
-                consecutiveFailures++;
-            }
-        }
-
-        if (consecutiveFailures >= 3) {
-            const blockMsg = `Circuit Breaker Triggered: The action '${decision.action}' has failed 3 consecutive times. Agent paused to protect gas. Please check your vault balance or fix the issue before resuming.`;
-            console.warn(`[runtime][${agent.tokenId}] ${blockMsg}`);
-
-            await agent.memory.store({
-                type: "blocked",
-                action: decision.action,
-                params: decision.params,
-                result: { success: false, error: blockMsg },
-                reasoning: "Circuit breaker condition met",
-                timestamp: new Date(),
-            });
-
-            return {
-                acted: false,
-                action: "wait",
-                reasoning: "Circuit breaker triggered due to consecutive failures. Hardware/policy intervention required.",
-                message: blockMsg,
-                blocked: true,
-                blockReason: blockMsg,
-                // Do not mark done, keep goal so user can resume once fixed
-            };
-        }
-    }
-
-    // ───── 4. Encode: find action and encode to payload ─────
-    const actionModule = agent.actions.find(a => a.name === decision.action);
-    if (!actionModule) {
+    if (confidence < minActionConfidence) {
+        const blockReason = `Model confidence ${confidence.toFixed(2)} below runtime threshold ${minActionConfidence.toFixed(2)}`;
         await agent.memory.store({
             type: "blocked",
             action: decision.action,
-            result: { success: false, error: `Unknown action: ${decision.action}` },
+            params: decisionParams,
+            result: { success: false, error: blockReason },
+            reasoning: decision.reasoning,
             timestamp: new Date(),
         });
+        addTrace(
+            executionTrace,
+            "validate",
+            "blocked",
+            "Runtime confidence gate rejected decision",
+            { confidence, minActionConfidence },
+        );
         return {
             acted: false,
             action: decision.action,
             reasoning: decision.reasoning,
+            message: "Action rejected by runtime confidence gate. Waiting for a higher-confidence decision.",
             blocked: true,
-            blockReason: `Unknown action: ${decision.action}`,
+            blockReason,
+            done: decision.done,
+            nextCheckMs: decision.nextCheckMs,
+            failureCategory: "model_output_error",
+            errorCode: "MODEL_LOW_CONFIDENCE",
+            executionTrace,
+            shadowComparison,
         };
     }
 
-    // Read-only actions (analytics, portfolio)
-    if (actionModule.readonly) {
+    // Circuit breaker for repeated failing actions
+    let consecutiveFailures = 0;
+    for (const m of memories) {
+        if (m.type === "execution" && m.result?.success) break;
+        if (m.type === "observation") break;
+        if (
+            m.action === decision.action &&
+            (m.type === "blocked" ||
+                (m.type === "execution" && m.result?.success === false))
+        ) {
+            consecutiveFailures++;
+        }
+    }
+
+    if (consecutiveFailures >= 3) {
+        const blockMsg = `Circuit Breaker Triggered: The action '${decision.action}' has failed 3 consecutive times. Agent paused to protect gas. Please check your vault balance or fix the issue before resuming.`;
         await agent.memory.store({
-            type: "observation",
+            type: "blocked",
             action: decision.action,
-            params: decision.params,
+            params: decisionParams,
+            result: { success: false, error: blockMsg },
+            reasoning: "Circuit breaker condition met",
+            timestamp: new Date(),
+        });
+        addTrace(executionTrace, "validate", "blocked", "Circuit breaker triggered");
+        return {
+            acted: false,
+            action: "wait",
+            reasoning:
+                "Circuit breaker triggered due to consecutive failures. Hardware/policy intervention required.",
+            message: blockMsg,
+            blocked: true,
+            blockReason: blockMsg,
+            failureCategory: "business_rejected",
+            errorCode: "BUSINESS_CIRCUIT_BREAKER",
+            executionTrace,
+            shadowComparison,
+        };
+    }
+
+    const plan = buildExecutionPlan(decision, agent.actions);
+    if (shadowCompareEnabled) {
+        const legacyPlan = buildLegacyExecutionPlan(decision, agent.actions);
+        shadowComparison = buildShadowComparison(plan, legacyPlan);
+    }
+    addTrace(executionTrace, "plan", "ok", "Execution plan built", {
+        kind: plan.kind,
+        action: plan.actionName,
+        shadowDiverged: shadowComparison?.diverged,
+    });
+
+    if (plan.kind === "blocked") {
+        await agent.memory.store({
+            type: "blocked",
+            action: plan.actionName,
+            params: plan.params,
+            result: { success: false, error: plan.reason },
             reasoning: decision.reasoning,
             timestamp: new Date(),
         });
+        addTrace(executionTrace, "validate", "blocked", "Planner rejected decision");
+        return {
+            acted: false,
+            action: plan.actionName,
+            reasoning: decision.reasoning,
+            message: `Action rejected by runtime planner: ${plan.reason}`,
+            blocked: true,
+            blockReason: plan.reason,
+            done: decision.done,
+            nextCheckMs: decision.nextCheckMs,
+            failureCategory: plan.failureCategory,
+            errorCode: plan.errorCode,
+            executionTrace,
+            shadowComparison,
+        };
+    }
+
+    if (plan.kind === "readonly") {
+        await agent.memory.store({
+            type: "observation",
+            action: plan.actionName,
+            params: plan.params,
+            reasoning: decision.reasoning,
+            timestamp: new Date(),
+        });
+        addTrace(executionTrace, "validate", "ok", "Readonly action validated");
+        addTrace(executionTrace, "execute", "skip", "Readonly action has no tx");
         return {
             acted: true,
-            action: decision.action,
+            action: plan.actionName,
             reasoning: decision.reasoning,
             message: decision.message,
             blocked: false,
             done: decision.done,
             nextCheckMs: decision.nextCheckMs,
+            executionTrace,
+            shadowComparison,
         };
     }
 
+    const actionModule = plan.actionModule;
+    if (!actionModule || plan.kind !== "write") {
+        await agent.memory.store({
+            type: "blocked",
+            action: plan.actionName,
+            params: plan.params,
+            result: { success: false, error: "Planner produced no executable action" },
+            reasoning: decision.reasoning,
+            timestamp: new Date(),
+        });
+        addTrace(
+            executionTrace,
+            "validate",
+            "error",
+            "Planner produced no executable action",
+        );
+        return {
+            acted: false,
+            action: plan.actionName,
+            reasoning: decision.reasoning,
+            blocked: true,
+            blockReason: "Planner produced no executable action",
+            done: decision.done,
+            nextCheckMs: decision.nextCheckMs,
+            failureCategory: "infrastructure_error",
+            errorCode: "INFRA_RUNTIME_EXCEPTION",
+            executionTrace,
+            shadowComparison,
+        };
+    }
+
+    addTrace(executionTrace, "validate", "ok", "Write action validated");
     const payload = actionModule.encode({
-        ...decision.params,
-        vault: agent.vault, // Inject vault so actions don't need global state
+        ...plan.params,
+        vault: agent.vault,
     });
 
-    // ───── 5. Check Safety: guardrails ─────
-    // Compute spend amount: for native BNB swaps use payload.value,
-    // for ERC20 swaps use amountIn from decision params
-    const amountInRaw = decision.params?.amountIn as string | undefined;
-    const minOutRaw = decision.params?.minOut as string | undefined;
+    const amountInRaw = plan.params.amountIn as string | undefined;
+    const minOutRaw = plan.params.minOut as string | undefined;
     const amountInBig = amountInRaw ? BigInt(amountInRaw) : undefined;
     const minOutBig = minOutRaw ? BigInt(minOutRaw) : undefined;
+    const spendAmount = payload.value > 0n ? payload.value : (amountInBig ?? 0n);
 
-    const spendAmount = payload.value > 0n
-        ? payload.value
-        : (amountInBig ?? 0n);
-
-    // Collect token addresses involved (for token whitelist/blacklist checks)
     const actionTokens: string[] = [];
-    if (decision.params?.tokenIn) actionTokens.push((decision.params.tokenIn as string).toLowerCase());
-    if (decision.params?.tokenOut) actionTokens.push((decision.params.tokenOut as string).toLowerCase());
-    if (decision.params?.token) actionTokens.push((decision.params.token as string).toLowerCase());
+    if (plan.params.tokenIn) {
+        actionTokens.push((plan.params.tokenIn as string).toLowerCase());
+    }
+    if (plan.params.tokenOut) {
+        actionTokens.push((plan.params.tokenOut as string).toLowerCase());
+    }
+    if (plan.params.token) {
+        actionTokens.push((plan.params.token as string).toLowerCase());
+    }
 
     const context: ExecutionContext = {
         tokenId: agent.tokenId,
         agentType: agent.agentType,
         vault: agent.vault,
         timestamp: Math.floor(Date.now() / 1000),
-        actionName: decision.action,
+        actionName: plan.actionName,
         spendAmount,
         actionTokens: actionTokens.length > 0 ? actionTokens : undefined,
         amountIn: amountInBig,
@@ -234,26 +409,27 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
     };
 
     const safetyResult = await agent.guardrails.check(payload, context);
-
     if (!safetyResult.ok) {
         const firstViolation = safetyResult.violations[0];
         const blockMsg = firstViolation?.message ?? "Policy violation";
-
-        // Override LLM's optimistic message with the actual block reason
-        // so the user sees what happened, not the LLM's pre-check plan
+        const policyFailure = classifyFailureFromPolicyViolation(firstViolation?.code);
         const userMessage = `Action blocked by safety policy: ${blockMsg}`;
 
         await agent.memory.store({
             type: "blocked",
-            action: decision.action,
-            params: decision.params,
+            action: plan.actionName,
+            params: plan.params,
             result: { success: false, error: blockMsg },
             reasoning: decision.reasoning,
             timestamp: new Date(),
         });
+        addTrace(executionTrace, "simulate", "blocked", "Guardrails rejected payload", {
+            policy: firstViolation?.policy,
+            violationCode: firstViolation?.code,
+        });
         return {
             acted: false,
-            action: decision.action,
+            action: plan.actionName,
             reasoning: decision.reasoning,
             message: userMessage,
             payload,
@@ -261,23 +437,25 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
             blockReason: blockMsg,
             done: decision.done,
             nextCheckMs: decision.nextCheckMs,
+            failureCategory: policyFailure.failureCategory,
+            errorCode: policyFailure.errorCode,
+            executionTrace,
+            shadowComparison,
         };
     }
 
-    // ───── 6. Return payload for caller to submit ─────
-    // (Transaction submission is the caller's responsibility,
-    //  so the caller can handle gas, retries, receipts, etc.)
+    addTrace(executionTrace, "simulate", "ok", "Guardrails preflight passed");
+    addTrace(executionTrace, "execute", "ok", "Payload ready for scheduler");
 
-    // Enrich params with txValue for spending tracking in guardrails
     const enrichedParams = {
-        ...decision.params,
+        ...plan.params,
         vault: agent.vault,
         txValue: payload.value.toString(),
     };
 
     return {
         acted: true,
-        action: decision.action,
+        action: plan.actionName,
         reasoning: decision.reasoning,
         message: decision.message,
         params: enrichedParams,
@@ -285,13 +463,11 @@ export async function runAgentCycle(agent: Agent): Promise<RunResult> {
         blocked: false,
         done: decision.done,
         nextCheckMs: decision.nextCheckMs,
+        executionTrace,
+        shadowComparison,
     };
 }
 
-/**
- * Record the result of a transaction execution in agent memory.
- * Called by the scheduler after submitTransaction().
- */
 export async function recordExecution(
     agent: Agent,
     action: string,

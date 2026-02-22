@@ -31,6 +31,22 @@ function optionalInt(key: string, fallback: number): number {
     return Number.isFinite(value) ? value : fallback;
 }
 
+function optionalFloat(
+    key: string,
+    fallback: number,
+    bounds?: { min?: number; max?: number },
+): number {
+    const raw = process.env[key];
+    if (!raw) return fallback;
+    const value = Number.parseFloat(raw);
+    if (!Number.isFinite(value)) return fallback;
+    const min = bounds?.min;
+    const max = bounds?.max;
+    if (min != null && value < min) return min;
+    if (max != null && value > max) return max;
+    return value;
+}
+
 function optionalBigIntList(key: string): bigint[] {
     const raw = process.env[key];
     if (!raw) return [];
@@ -69,6 +85,11 @@ export const config = {
     llmModel: optionalAny(["LLM_MODEL"], "gemini-2.0-flash"),
     llmMaxTokens: optionalInt("LLM_MAX_TOKENS", 2048),
     llmTimeoutMs: optionalInt("LLM_TIMEOUT_MS", 30_000),
+    llmMinActionConfidence: optionalFloat(
+        "LLM_MIN_ACTION_CONFIDENCE",
+        0.45,
+        { min: 0, max: 1 },
+    ),
 
     // Default token
     tokenId: BigInt(optionalAny(["TOKEN_ID"], "0")),
@@ -109,4 +130,9 @@ export const config = {
     // Store limits
     maxRunRecords: parseInt(optionalAny(["MAX_RUN_RECORDS"], "1000"), 10),
     statusRunsLimit: parseInt(optionalAny(["STATUS_RUNS_LIMIT"], "20"), 10),
+
+    // Phase 4 shadow mode (dual-run metrics / dry-run canary)
+    shadowModeEnabled: optionalBool("SHADOW_MODE_ENABLED", false),
+    shadowModeTokenIds: optionalBigIntList("SHADOW_MODE_TOKEN_IDS"),
+    shadowExecuteTx: optionalBool("SHADOW_EXECUTE_TX", false),
 } as const;

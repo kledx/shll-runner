@@ -92,6 +92,7 @@ export function createSwapAction(): IAction {
                 tokenOut: { type: "string", description: "Output token address (0x...)" },
                 amountIn: { type: "string", description: "Amount of input token in wei (e.g. '1000000000000000' for 0.001 with 18 decimals)" },
                 minOut: { type: "string", description: "Minimum output amount in wei. Set to '0' if price impact is acceptable." },
+                deadline: { type: "number", description: "Unix timestamp deadline (seconds). Optional; defaults to now + 20 minutes." },
             },
             required: ["router", "tokenIn", "tokenOut", "amountIn"],
         },

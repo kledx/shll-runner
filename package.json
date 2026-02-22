@@ -7,6 +7,7 @@
         "dev": "tsx watch src/index.ts",
         "build": "tsc",
         "start": "node dist/index.js",
+        "test:replay": "npm run build && node dist/eval/replayTest.js && node dist/actions/paramsValidatorTest.js && node dist/runFailureTest.js && node dist/agent/plannerTest.js",
         "smoke:signal-sync": "powershell -ExecutionPolicy Bypass -File scripts/p3-signal-sync-smoke.ps1",
         "smoke:pack-load": "powershell -ExecutionPolicy Bypass -File scripts/p4-pack-load-smoke.ps1"
     },

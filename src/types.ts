@@ -126,6 +126,14 @@ export interface RunRecord {
     strategyExplain?: string;
     /** V1.4: error category from PolicyGuardV2.validate pre-check */
     failureCategory?: string;
+    /** P-2026-023: normalized machine-readable error code */
+    errorCode?: string;
+    /** P-2026-023: stage-by-stage runtime trace for replay/audit */
+    executionTrace?: ExecutionTraceEntry[];
+    /** P-2026-023 Phase 4: primary (default) or shadow mode run */
+    runMode?: RunMode;
+    /** P-2026-023 Phase 4: primary vs legacy planner comparison snapshot */
+    shadowCompare?: ShadowComparison;
     /** V2.1: strategy/brain type that generated this action */
     brainType?: string;
     /** V2.1: semantic intent type (swap, approve, wrap, etc.) */
@@ -135,6 +143,36 @@ export interface RunRecord {
     /** V3.2: user-facing message from LLM agent */
     decisionMessage?: string;
     createdAt: string;
+}
+
+export type RunMode = "primary" | "shadow";
+
+export interface ShadowComparison {
+    primaryKind: "wait" | "readonly" | "write" | "blocked";
+    legacyKind: "wait" | "readonly" | "write" | "blocked";
+    primaryAction: string;
+    legacyAction: string;
+    primaryErrorCode?: string;
+    legacyErrorCode?: string;
+    diverged: boolean;
+    reason?: string;
+    at: string;
+}
+
+export interface ExecutionTraceEntry {
+    stage:
+    | "observe"
+    | "propose"
+    | "plan"
+    | "validate"
+    | "simulate"
+    | "execute"
+    | "verify"
+    | "record";
+    status: "ok" | "skip" | "blocked" | "error";
+    at: string;
+    note?: string;
+    meta?: Record<string, unknown>;
 }
 
 export interface StrategyConfigRecord {

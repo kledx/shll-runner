@@ -89,6 +89,7 @@ export class HardPolicyGuard implements IGuardrails {
                 return {
                     ok: false,
                     violations: [{
+                        code: "HARD_POLICY_REJECTED",
                         policy: "PolicyGuardV4",
                         message: reason || "On-chain policy check failed",
                     }],
@@ -102,6 +103,7 @@ export class HardPolicyGuard implements IGuardrails {
             return {
                 ok: false,
                 violations: [{
+                    code: "HARD_SIMULATION_REVERTED",
                     policy: "PolicyGuardV4",
                     message: `Simulation reverted: ${message.slice(0, 200)}`,
                 }],

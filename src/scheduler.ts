@@ -9,10 +9,15 @@ import { keccak256, stringToHex } from "viem";
 import type { Logger } from "./logger.js";
 import type { RunnerStore } from "./store.js";
 import type { ChainServices } from "./chain.js";
+import type { ExecutionTraceEntry } from "./types.js";
 import { AgentManager } from "./agent/manager.js";
 import { getBlueprint } from "./agent/factory.js";
 import { runAgentCycle, recordExecution } from "./agent/runtime.js";
 import { sanitizeForUser, extractErrorMessage } from "./errors.js";
+import {
+    classifyFailureFromBlockedReason,
+    classifyFailureFromError,
+} from "./runFailure.js";
 
 // ═══════════════════════════════════════════════════════
 //                  Config Interface
@@ -27,6 +32,10 @@ export interface SchedulerConfig {
     pgHost: string;
     pgPort: number;
     pgDatabase: string;
+    shadowModeEnabled: boolean;
+    shadowModeTokenIds: bigint[];
+    shadowExecuteTx: boolean;
+    llmMinActionConfidence: number;
 }
 
 export interface SchedulerContext {
@@ -64,6 +73,31 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function appendTrace(
+    entries: ExecutionTraceEntry[],
+    stage: ExecutionTraceEntry["stage"],
+    status: ExecutionTraceEntry["status"],
+    note?: string,
+    meta?: Record<string, unknown>,
+): ExecutionTraceEntry[] {
+    return [
+        ...entries,
+        {
+            stage,
+            status,
+            at: new Date().toISOString(),
+            note,
+            meta,
+        },
+    ];
+}
+
+function isShadowModeForToken(tokenId: bigint, config: SchedulerConfig): boolean {
+    if (!config.shadowModeEnabled) return false;
+    if (config.shadowModeTokenIds.length === 0) return true;
+    return config.shadowModeTokenIds.some((id) => id === tokenId);
+}
+
 /**
  * Run a single token's agent cycle.
  * Extracted so it can be called from both the scheduler loop and externally
@@ -77,6 +111,8 @@ export async function runSingleToken(
     opts?: { skipCadenceCheck?: boolean },
 ): Promise<boolean> {
     const { store, chain, config, agentManager, log } = ctx;
+    let cycleTrace: ExecutionTraceEntry[] = [];
+    const shadowMode = isShadowModeForToken(tokenId, config);
 
     // B2: Per-token adaptive cadence — skip if not time yet
     if (!opts?.skipCadenceCheck) {
@@ -139,13 +175,29 @@ export async function runSingleToken(
         if (!agent) return false;
 
         // Run one cognitive cycle
-        const result = await runAgentCycle(agent);
+        const result = await runAgentCycle(agent, {
+            shadowCompare: shadowMode,
+            minActionConfidence: config.llmMinActionConfidence,
+        });
+        cycleTrace = [...(result.executionTrace ?? [])];
         log.info(
             `[V3][${tokenId.toString()}] ${result.action}: ${result.reasoning}${result.blocked ? ` [BLOCKED: ${result.blockReason}]` : ""}`,
         );
 
         // Record non-TX decisions (wait / blocked / read-only) to runs
         if (!result.acted || result.blocked || !result.payload) {
+            const fallbackBlocked = result.blocked
+                ? classifyFailureFromBlockedReason(result.blockReason ?? "blocked")
+                : null;
+            const blockedFailure = result.blocked
+                ? {
+                    failureCategory:
+                        result.failureCategory ?? fallbackBlocked!.failureCategory,
+                    errorCode:
+                        result.errorCode ?? fallbackBlocked!.errorCode,
+                }
+                : {};
+
             await store.recordRun({
                 tokenId: tokenId.toString(),
                 actionType: "auto",
@@ -158,6 +210,16 @@ export async function runSingleToken(
                 error: result.blocked
                     ? result.blockReason
                     : undefined,
+                executionTrace: appendTrace(
+                    cycleTrace,
+                    "record",
+                    result.blocked ? "blocked" : "ok",
+                    "Non-TX decision recorded",
+                    { action: result.action },
+                ),
+                runMode: shadowMode ? "shadow" : "primary",
+                shadowCompare: result.shadowComparison,
+                ...blockedFailure,
             });
 
             // P-2026-018: Done signal — clear goal, enter standby (keep autopilot active)
@@ -189,6 +251,17 @@ export async function runSingleToken(
                     intentType: "paused",
                     decisionReason: `Auto-paused after ${count} consecutive blocked checks: ${result.blockReason ?? "unknown"}`,
                     error: result.blockReason,
+                    failureCategory: "business_rejected",
+                    errorCode: "BUSINESS_AUTOPAUSE_THRESHOLD",
+                    executionTrace: appendTrace(
+                        cycleTrace,
+                        "record",
+                        "blocked",
+                        "Auto-paused after consecutive blocked checks",
+                        { blockedCount: count },
+                    ),
+                    runMode: shadowMode ? "shadow" : "primary",
+                    shadowCompare: result.shadowComparison,
                 });
                 await store.clearTradingGoal(tokenId);
                 agentManager.stopAgent(tokenId);
@@ -229,11 +302,62 @@ export async function runSingleToken(
             return true;
         }
 
+        if (shadowMode && !config.shadowExecuteTx) {
+            const hash = keccak256(
+                stringToHex(
+                    `${result.payload.target.toLowerCase()}:${result.payload.value.toString()}:${result.payload.data.toLowerCase()}`,
+                ),
+            );
+            await store.recordRun({
+                tokenId: tokenId.toString(),
+                actionType: "auto",
+                actionHash: hash,
+                simulateOk: true,
+                brainType: agent.agentType,
+                intentType: result.action,
+                decisionReason: result.reasoning,
+                decisionMessage: result.message,
+                executionTrace: appendTrace(
+                    appendTrace(
+                        cycleTrace,
+                        "execute",
+                        "skip",
+                        "Shadow mode dry-run, tx submission skipped",
+                        { action: result.action },
+                    ),
+                    "record",
+                    "ok",
+                    "Shadow dry-run recorded",
+                    { actionHash: hash },
+                ),
+                runMode: "shadow",
+                shadowCompare: result.shadowComparison,
+            });
+            return true;
+        }
+
         // If the runtime produced a payload, submit it on-chain
         if (result.acted && result.payload && !result.blocked) {
+            let txTrace = appendTrace(
+                cycleTrace,
+                "execute",
+                "ok",
+                "Submitting transaction on-chain",
+                { action: result.action },
+            );
             const txResult = await chain.executeAction(
                 tokenId,
                 result.payload,
+            );
+            txTrace = appendTrace(
+                txTrace,
+                "verify",
+                "ok",
+                "Transaction confirmed",
+                {
+                    txHash: txResult.hash,
+                    receiptStatus: txResult.receiptStatus,
+                },
             );
             log.info(
                 `[V3][${tokenId.toString()}] TX confirmed block=${txResult.receiptBlock} status=${txResult.receiptStatus}`,
@@ -264,6 +388,15 @@ export async function runSingleToken(
                 intentType: result.action,
                 decisionReason: result.reasoning,
                 decisionMessage: result.message,
+                executionTrace: appendTrace(
+                    txTrace,
+                    "record",
+                    "ok",
+                    "Successful TX run recorded",
+                    { actionHash: hash },
+                ),
+                runMode: shadowMode ? "shadow" : "primary",
+                shadowCompare: result.shadowComparison,
             });
         }
 
@@ -287,6 +420,7 @@ export async function runSingleToken(
     } catch (err) {
         const rawMessage = extractErrorMessage(err);
         const userMessage = sanitizeForUser(rawMessage);
+        const failure = classifyFailureFromError(rawMessage);
         log.error(
             `[V3][${tokenId.toString()}] error:`,
             rawMessage,
@@ -310,10 +444,20 @@ export async function runSingleToken(
             actionHash: "0x00",
             simulateOk: false,
             error: rawMessage,
+            failureCategory: failure.failureCategory,
+            errorCode: failure.errorCode,
             brainType: agent?.agentType,
             intentType: "error",
             decisionReason: userMessage,
             decisionMessage: userMessage,
+            executionTrace: appendTrace(
+                cycleTrace,
+                "record",
+                "error",
+                "Scheduler exception recorded",
+                { error: rawMessage.slice(0, 240) },
+            ),
+            runMode: shadowMode ? "shadow" : "primary",
         });
 
         return false;
@@ -331,6 +475,10 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
     log.info(`Operator: ${chain.account.address}`);
     log.info(`Agent NFA: ${config.agentNfaAddress}`);
     log.info(`Poll interval: ${config.pollIntervalMs}ms`);
+    log.info(`LLM min action confidence: ${config.llmMinActionConfidence}`);
+    log.info(
+        `Shadow mode: ${config.shadowModeEnabled ? "enabled" : "disabled"}${config.shadowModeEnabled ? ` (dryRunTx=${!config.shadowExecuteTx})` : ""}`,
+    );
     log.info(
         `Store backend: postgres (${config.databaseUrl ? "DATABASE_URL" : `${config.pgHost}:${config.pgPort}/${config.pgDatabase}`})`,
     );

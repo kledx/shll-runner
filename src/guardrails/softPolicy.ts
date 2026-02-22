@@ -65,6 +65,7 @@ export class SoftPolicyEngine implements IGuardrails {
             );
             if (!isAllowed) {
                 violations.push({
+                    code: "SOFT_ALLOWED_DEX",
                     policy: "allowedDexes",
                     message: `Target ${action.target} not in allowed DEX list`,
                 });
@@ -77,6 +78,7 @@ export class SoftPolicyEngine implements IGuardrails {
             const tradeAmount = context.spendAmount ?? action.value;
             if (tradeAmount > maxTrade) {
                 violations.push({
+                    code: "SOFT_MAX_TRADE_AMOUNT",
                     policy: "maxTradeAmount",
                     message: `Trade amount ${tradeAmount} exceeds per-trade limit ${maxTrade}`,
                 });
@@ -90,6 +92,7 @@ export class SoftPolicyEngine implements IGuardrails {
                 const elapsed = context.timestamp - lastRun;
                 if (elapsed < config.cooldownSeconds) {
                     violations.push({
+                        code: "SOFT_COOLDOWN",
                         policy: "cooldown",
                         message: `Cooldown: ${config.cooldownSeconds - elapsed}s remaining`,
                     });
@@ -102,6 +105,7 @@ export class SoftPolicyEngine implements IGuardrails {
             const todayRuns = await this.getTodayRunCount();
             if (todayRuns >= config.maxRunsPerDay) {
                 violations.push({
+                    code: "SOFT_MAX_RUNS_PER_DAY",
                     policy: "maxRunsPerDay",
                     message: `Daily run limit reached: ${todayRuns}/${config.maxRunsPerDay}`,
                 });
@@ -115,6 +119,7 @@ export class SoftPolicyEngine implements IGuardrails {
             const tradeAmount = context.spendAmount ?? action.value;
             if (todaySpent + tradeAmount > maxDaily) {
                 violations.push({
+                    code: "SOFT_MAX_DAILY_AMOUNT",
                     policy: "maxDailyAmount",
                     message: `Would exceed daily limit: spent=${todaySpent}, tx=${tradeAmount}, max=${maxDaily}`,
                 });
@@ -130,6 +135,7 @@ export class SoftPolicyEngine implements IGuardrails {
                 if (token === ZERO) continue;
                 if (!allowed.has(token)) {
                     violations.push({
+                        code: "SOFT_ALLOWED_TOKENS",
                         policy: "allowedTokens",
                         message: `Token ${token} is not in your allowed tokens list`,
                     });
@@ -143,6 +149,7 @@ export class SoftPolicyEngine implements IGuardrails {
             for (const token of context.actionTokens) {
                 if (blocked.has(token)) {
                     violations.push({
+                        code: "SOFT_BLOCKED_TOKENS",
                         policy: "blockedTokens",
                         message: `Token ${token} is in your blocked tokens list`,
                     });
@@ -160,6 +167,7 @@ export class SoftPolicyEngine implements IGuardrails {
             const slippageBps = Number((context.amountIn - context.minOut) * 10000n / context.amountIn);
             if (slippageBps > config.maxSlippageBps) {
                 violations.push({
+                    code: "SOFT_MAX_SLIPPAGE_BPS",
                     policy: "maxSlippageBps",
                     message: `Implied slippage ${slippageBps}bps exceeds max ${config.maxSlippageBps}bps`,
                 });

@@ -1,8 +1,11 @@
 import { Pool, type PoolConfig } from "pg";
 import type {
     AutopilotRecord,
+    ExecutionTraceEntry,
     MarketSignalRecord,
     RunRecord,
+    RunMode,
+    ShadowComparison,
     StrategyConfigRecord,
     StrategyType,
 } from "./types.js";
@@ -80,6 +83,32 @@ function mapAutopilotRow(row: Record<string, unknown>): AutopilotRecord {
 }
 
 function mapRunRow(row: Record<string, unknown>): RunRecord {
+    let executionTrace: ExecutionTraceEntry[] | undefined;
+    let shadowCompare: ShadowComparison | undefined;
+    if (Array.isArray(row.execution_trace)) {
+        executionTrace = row.execution_trace as ExecutionTraceEntry[];
+    } else if (typeof row.execution_trace === "string") {
+        try {
+            const parsed = JSON.parse(row.execution_trace) as unknown;
+            if (Array.isArray(parsed)) {
+                executionTrace = parsed as ExecutionTraceEntry[];
+            }
+        } catch {
+            // ignore malformed trace payloads
+        }
+    }
+    if (row.shadow_compare && typeof row.shadow_compare === "object") {
+        shadowCompare = row.shadow_compare as ShadowComparison;
+    } else if (typeof row.shadow_compare === "string") {
+        try {
+            const parsed = JSON.parse(row.shadow_compare) as unknown;
+            if (parsed && typeof parsed === "object") {
+                shadowCompare = parsed as ShadowComparison;
+            }
+        } catch {
+            // ignore malformed shadow compare payloads
+        }
+    }
     return {
         id: String(row.id),
         tokenId: String(row.token_id),
@@ -91,6 +120,10 @@ function mapRunRow(row: Record<string, unknown>): RunRecord {
         paramsHash: row.params_hash == null ? undefined : String(row.params_hash),
         strategyExplain: row.strategy_explain == null ? undefined : String(row.strategy_explain),
         failureCategory: row.failure_category == null ? undefined : String(row.failure_category),
+        errorCode: row.error_code == null ? undefined : String(row.error_code),
+        executionTrace,
+        runMode: row.run_mode == null ? "primary" : (String(row.run_mode) as RunMode),
+        shadowCompare,
         brainType: row.brain_type == null ? undefined : String(row.brain_type),
         intentType: row.intent_type == null ? undefined : String(row.intent_type),
         decisionReason: row.decision_reason == null ? undefined : String(row.decision_reason),
@@ -220,6 +253,10 @@ export class RunnerStore {
                 simulate_ok BOOLEAN NOT NULL,
                 tx_hash TEXT NULL,
                 error TEXT NULL,
+                error_code TEXT NULL,
+                execution_trace JSONB NULL,
+                run_mode TEXT NOT NULL DEFAULT 'primary',
+                shadow_compare JSONB NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         `);
@@ -322,6 +359,24 @@ export class RunnerStore {
         await this.pool.query(`
             ALTER TABLE runs
             ADD COLUMN IF NOT EXISTS failure_category TEXT NULL
+        `);
+
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS error_code TEXT NULL
+        `);
+
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS execution_trace JSONB NULL
+        `);
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS run_mode TEXT NOT NULL DEFAULT 'primary'
+        `);
+        await this.pool.query(`
+            ALTER TABLE runs
+            ADD COLUMN IF NOT EXISTS shadow_compare JSONB NULL
         `);
 
         // V2.1: add brain/intent/reason columns to runs table
@@ -949,12 +1004,16 @@ export class RunnerStore {
                 params_hash,
                 strategy_explain,
                 failure_category,
+                error_code,
+                execution_trace,
+                run_mode,
+                shadow_compare,
                 brain_type,
                 intent_type,
                 decision_reason,
                 decision_message
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14::jsonb,$15,$16,$17,$18)
             RETURNING *
             `,
             [
@@ -968,6 +1027,10 @@ export class RunnerStore {
                 input.paramsHash ?? null,
                 input.strategyExplain ?? null,
                 input.failureCategory ?? null,
+                input.errorCode ?? null,
+                input.executionTrace ? JSON.stringify(input.executionTrace) : null,
+                input.runMode ?? "primary",
+                input.shadowCompare ? JSON.stringify(input.shadowCompare) : null,
                 input.brainType ?? null,
                 input.intentType ?? null,
                 input.decisionReason ?? null,
@@ -1099,6 +1162,185 @@ export class RunnerStore {
         return {
             total: Number((countResult.rows[0] as Record<string, unknown>)?.total ?? 0),
             items: itemsResult.rows.map((row) => mapRunRow(row as Record<string, unknown>)),
+        };
+    }
+
+    async getShadowMetrics(options?: {
+        tokenId?: bigint;
+        sinceHours?: number;
+    }): Promise<{
+        sinceHours: number;
+        tokenId?: string;
+        modes: Record<
+            RunMode,
+            {
+                totalRuns: number;
+                successRuns: number;
+                blockedRuns: number;
+                exceptionRuns: number;
+                txRuns: number;
+                manualInterventionRuns: number;
+                avgLatencyMs: number | null;
+                divergenceRuns: number;
+                successRate: number;
+                rejectRate: number;
+                exceptionRate: number;
+                interventionRate: number;
+                divergenceRate: number;
+            }
+        >;
+        compare: {
+            successRateDelta: number;
+            rejectRateDelta: number;
+            exceptionRateDelta: number;
+            interventionRateDelta: number;
+        };
+    }> {
+        const sinceHours = Math.max(1, Math.min(24 * 30, Math.floor(options?.sinceHours ?? 72)));
+        const where: string[] = ["chain_id = $1", "created_at >= NOW() - ($2::text || ' hours')::interval"];
+        const params: unknown[] = [this.chainId, sinceHours];
+        if (options?.tokenId != null) {
+            where.push("token_id = $3");
+            params.push(options.tokenId.toString());
+        }
+
+        const result = await this.pool.query(
+            `
+            SELECT run_mode, tx_hash, error, failure_category, error_code, execution_trace, shadow_compare
+            FROM runs
+            WHERE ${where.join(" AND ")}
+            `,
+            params
+        );
+
+        const empty = {
+            totalRuns: 0,
+            successRuns: 0,
+            blockedRuns: 0,
+            exceptionRuns: 0,
+            txRuns: 0,
+            manualInterventionRuns: 0,
+            divergenceRuns: 0,
+            latencyTotalMs: 0,
+            latencyCount: 0,
+        };
+        const modes = {
+            primary: { ...empty },
+            shadow: { ...empty },
+        };
+
+        const interventionCodes = new Set([
+            "BUSINESS_AUTHORIZATION_REQUIRED",
+            "BUSINESS_AUTOPAUSE_THRESHOLD",
+            "BUSINESS_CIRCUIT_BREAKER",
+        ]);
+
+        for (const row of result.rows as Array<Record<string, unknown>>) {
+            const mode = row.run_mode === "shadow" ? "shadow" : "primary";
+            const bucket = modes[mode];
+            bucket.totalRuns++;
+
+            if (row.error == null) {
+                bucket.successRuns++;
+            }
+            if (row.tx_hash != null) {
+                bucket.txRuns++;
+            }
+
+            const category = row.failure_category == null ? "" : String(row.failure_category);
+            if (category === "business_rejected") {
+                bucket.blockedRuns++;
+            } else if (row.error != null) {
+                bucket.exceptionRuns++;
+            }
+
+            const errorCode = row.error_code == null ? "" : String(row.error_code);
+            if (interventionCodes.has(errorCode)) {
+                bucket.manualInterventionRuns++;
+            }
+
+            let shadowCompare: Record<string, unknown> | null = null;
+            if (row.shadow_compare && typeof row.shadow_compare === "object") {
+                shadowCompare = row.shadow_compare as Record<string, unknown>;
+            } else if (typeof row.shadow_compare === "string") {
+                try {
+                    const parsed = JSON.parse(row.shadow_compare) as unknown;
+                    if (parsed && typeof parsed === "object") {
+                        shadowCompare = parsed as Record<string, unknown>;
+                    }
+                } catch {
+                    // ignore malformed shadow compare payloads
+                }
+            }
+            if (shadowCompare?.diverged === true) {
+                bucket.divergenceRuns++;
+            }
+
+            let trace: ExecutionTraceEntry[] | undefined;
+            if (Array.isArray(row.execution_trace)) {
+                trace = row.execution_trace as ExecutionTraceEntry[];
+            } else if (typeof row.execution_trace === "string") {
+                try {
+                    const parsed = JSON.parse(row.execution_trace) as unknown;
+                    if (Array.isArray(parsed)) {
+                        trace = parsed as ExecutionTraceEntry[];
+                    }
+                } catch {
+                    // ignore malformed trace payloads
+                }
+            }
+            if (trace && trace.length > 0) {
+                const observe = trace.find((item) => item.stage === "observe");
+                const record = trace.find((item) => item.stage === "record");
+                if (observe?.at && record?.at) {
+                    const start = Date.parse(observe.at);
+                    const end = Date.parse(record.at);
+                    if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+                        bucket.latencyTotalMs += end - start;
+                        bucket.latencyCount++;
+                    }
+                }
+            }
+        }
+
+        const withRates = (bucket: typeof empty) => {
+            const total = bucket.totalRuns || 1;
+            return {
+                totalRuns: bucket.totalRuns,
+                successRuns: bucket.successRuns,
+                blockedRuns: bucket.blockedRuns,
+                exceptionRuns: bucket.exceptionRuns,
+                txRuns: bucket.txRuns,
+                manualInterventionRuns: bucket.manualInterventionRuns,
+                avgLatencyMs:
+                    bucket.latencyCount > 0
+                        ? Math.round(bucket.latencyTotalMs / bucket.latencyCount)
+                        : null,
+                divergenceRuns: bucket.divergenceRuns,
+                successRate: bucket.successRuns / total,
+                rejectRate: bucket.blockedRuns / total,
+                exceptionRate: bucket.exceptionRuns / total,
+                interventionRate: bucket.manualInterventionRuns / total,
+                divergenceRate: bucket.divergenceRuns / total,
+            };
+        };
+
+        const primary = withRates(modes.primary);
+        const shadow = withRates(modes.shadow);
+
+        return {
+            sinceHours,
+            tokenId: options?.tokenId?.toString(),
+            modes: {
+                primary,
+                shadow,
+            },
+            compare: {
+                successRateDelta: shadow.successRate - primary.successRate,
+                rejectRateDelta: shadow.rejectRate - primary.rejectRate,
+                exceptionRateDelta: shadow.exceptionRate - primary.exceptionRate,
+                interventionRateDelta: shadow.interventionRate - primary.interventionRate,
+            },
         };
     }
 }

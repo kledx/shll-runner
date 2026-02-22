@@ -61,6 +61,11 @@ const strategyQuerySchema = z.object({
     tokenId: z.string().regex(/^\d+$/).optional(),
 });
 
+const shadowMetricsQuerySchema = z.object({
+    tokenId: z.string().regex(/^\d+$/).optional(),
+    sinceHours: z.string().optional(),
+});
+
 
 const marketSignalUpsertSchema = z.object({
     pair: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
@@ -131,6 +136,23 @@ export function parseStrategyQuery(
     raw: Record<string, string | undefined>
 ): StrategyQueryPayload {
     return strategyQuerySchema.parse(raw);
+}
+
+export function parseShadowMetricsQuery(
+    raw: Record<string, string | undefined>
+): { tokenId?: bigint; sinceHours?: number } {
+    const parsed = shadowMetricsQuerySchema.parse(raw);
+    const sinceHours =
+        parsed.sinceHours != null ? Number.parseInt(parsed.sinceHours, 10) : undefined;
+    if (sinceHours != null) {
+        if (!Number.isInteger(sinceHours) || sinceHours <= 0 || sinceHours > 24 * 30) {
+            throw new Error("sinceHours must be an integer between 1 and 720");
+        }
+    }
+    return {
+        tokenId: parsed.tokenId != null ? BigInt(parsed.tokenId) : undefined,
+        sinceHours,
+    };
 }
 
 export function normalizePermit(raw: OperatorPermitPayload): NormalizedPermit {

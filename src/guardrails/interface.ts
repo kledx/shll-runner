@@ -16,7 +16,21 @@ import type { ActionPayload } from "../actions/interface.js";
 //                    Check Result Types
 // ═══════════════════════════════════════════════════════
 
+export type PolicyViolationCode =
+    | "SOFT_ALLOWED_DEX"
+    | "SOFT_MAX_TRADE_AMOUNT"
+    | "SOFT_COOLDOWN"
+    | "SOFT_MAX_RUNS_PER_DAY"
+    | "SOFT_MAX_DAILY_AMOUNT"
+    | "SOFT_ALLOWED_TOKENS"
+    | "SOFT_BLOCKED_TOKENS"
+    | "SOFT_MAX_SLIPPAGE_BPS"
+    | "HARD_POLICY_REJECTED"
+    | "HARD_SIMULATION_REVERTED";
+
 export interface PolicyViolation {
+    /** Stable machine-readable violation code */
+    code: PolicyViolationCode;
     /** Which policy triggered the violation */
     policy: string;
     /** Human-readable rejection reason */
