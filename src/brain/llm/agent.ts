@@ -182,7 +182,9 @@ export class LLMBrain implements IBrain {
             .filter((v): v is number => typeof v === "number");
 
         const now = Date.now();
-        const startedAt = seenTimestamps.length > 0 ? Math.min(...seenTimestamps) : now;
+        const windowStart = now - cadence.durationMs;
+        const recentSeen = seenTimestamps.filter((ts) => ts >= windowStart);
+        const startedAt = recentSeen.length > 0 ? Math.min(...recentSeen) : now;
         const elapsedMs = Math.max(0, now - startedAt);
 
         if (elapsedMs >= cadence.durationMs) {
