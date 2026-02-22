@@ -549,6 +549,28 @@ export class RunnerStore {
         return result.rows.map((row) => BigInt(String(row.token_id)));
     }
 
+    /**
+     * V3.1: Earliest next check timestamp across all enabled schedulable tokens.
+     * Used by scheduler loop to avoid being bottlenecked by global pollIntervalMs.
+     */
+    async getEarliestNextCheckAt(): Promise<Date | null> {
+        const result = await this.pool.query(
+            `
+            SELECT MIN(COALESCE(ts.next_check_at, NOW())) AS next_check_at
+            FROM token_strategies ts
+            JOIN autopilots ap
+                ON ts.chain_id = ap.chain_id AND ts.token_id = ap.token_id
+            WHERE ts.chain_id = $1
+                AND ts.enabled = TRUE
+                AND ap.enabled = TRUE
+            `,
+            [this.chainId]
+        );
+        const raw = result.rows[0]?.next_check_at as string | Date | null | undefined;
+        if (!raw) return null;
+        return new Date(raw);
+    }
+
     async listAutopilots(): Promise<AutopilotRecord[]> {
         const result = await this.pool.query(
             `

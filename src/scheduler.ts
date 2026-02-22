@@ -73,6 +73,17 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function computeAdaptiveLoopSleepMs(
+    store: SchedulerContext["store"],
+    defaultPollIntervalMs: number,
+): Promise<number> {
+    const nextCheckAt = await store.getEarliestNextCheckAt();
+    if (!nextCheckAt) return defaultPollIntervalMs;
+    const deltaMs = nextCheckAt.getTime() - Date.now();
+    // Keep a small floor to avoid a busy loop while still honoring short cadences.
+    return Math.min(defaultPollIntervalMs, Math.max(1000, deltaMs));
+}
+
 function appendTrace(
     entries: ExecutionTraceEntry[],
     stage: ExecutionTraceEntry["stage"],
@@ -525,6 +536,7 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
     let consecutiveErrors = 0;
 
     while (true) {
+        let loopSleepMs = config.pollIntervalMs;
         try {
             lastLoopAt = Date.now();
 
@@ -540,6 +552,7 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
             }
 
             consecutiveErrors = 0;
+            loopSleepMs = await computeAdaptiveLoopSleepMs(store, config.pollIntervalMs);
         } catch (err) {
             consecutiveErrors++;
             log.error(
@@ -554,6 +567,6 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
             }
         }
 
-        await sleep(config.pollIntervalMs);
+        await sleep(loopSleepMs);
     }
 }
