@@ -2,9 +2,17 @@
     "name": "@shll/runner-sdk",
     "version": "1.0.0",
     "description": "SDK for building SHLL runners and interacting with the AgentNFA protocol",
-    "main": "dist/index.js",
+    "main": "dist/index.cjs",
+    "module": "dist/index.js",
     "types": "dist/index.d.ts",
     "type": "module",
+    "exports": {
+        ".": {
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs",
+            "types": "./dist/index.d.ts"
+        }
+    },
     "scripts": {
         "build": "tsup",
         "dev": "tsup --watch",
