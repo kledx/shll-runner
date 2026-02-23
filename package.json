@@ -14,6 +14,7 @@
     "dependencies": {
         "@ai-sdk/deepseek": "^2.0.20",
         "@ai-sdk/openai": "^3.0.29",
+        "@shll/runner-sdk": "file:../shll-runner-sdk",
         "@types/pg": "^8.16.0",
         "ai": "^6.0.90",
         "dotenv": "^17.3.1",
@@ -25,5 +26,13 @@
         "@types/node": "^25.2.3",
         "tsx": "^4.0.0",
         "typescript": "^5.3.0"
-    }
+    },
+    "directories": {
+        "doc": "docs",
+        "test": "tests"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "types": "./dist/index.d.ts"
 }

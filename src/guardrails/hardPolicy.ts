@@ -6,43 +6,18 @@
  *
  * This is a secondary guardrail — SoftPolicyEngine is the primary filter.
  * Both run in the cognitive loop's "Check" step.
+ *
+ * V3.1: Delegates simulation to @shll/runner-sdk PolicySimulator.
  */
 
-import type { Address, PublicClient, Hex } from "viem";
+import type { Address, PublicClient } from "viem";
+import { PolicySimulator } from "@shll/runner-sdk";
 import type { IGuardrails, PolicyCheckResult, ExecutionContext } from "./interface.js";
 import type { ActionPayload } from "../actions/interface.js";
 
 // ═══════════════════════════════════════════════════════
 //            Hard Policy Implementation
 // ═══════════════════════════════════════════════════════
-
-/** Minimal ABI for PolicyGuardV4.validate — must match contract signature */
-const POLICY_GUARD_V4_VALIDATE_ABI = [
-    {
-        name: "validate",
-        type: "function",
-        stateMutability: "view",
-        inputs: [
-            { name: "nfa", type: "address" },
-            { name: "tokenId", type: "uint256" },
-            { name: "agentAccount", type: "address" },
-            { name: "caller", type: "address" },
-            {
-                name: "action",
-                type: "tuple",
-                components: [
-                    { name: "target", type: "address" },
-                    { name: "value", type: "uint256" },
-                    { name: "data", type: "bytes" },
-                ],
-            },
-        ],
-        outputs: [
-            { name: "ok", type: "bool" },
-            { name: "reason", type: "string" },
-        ],
-    },
-] as const;
 
 export interface HardPolicyConfig {
     publicClient: PublicClient;
@@ -56,10 +31,19 @@ export interface HardPolicyConfig {
 }
 
 export class HardPolicyGuard implements IGuardrails {
+    private simulator: PolicySimulator;
+
     constructor(
         private tokenId: bigint,
         private config: HardPolicyConfig,
-    ) { }
+    ) {
+        this.simulator = new PolicySimulator({
+            publicClient: config.publicClient as any,
+            policyGuardV4Address: config.policyGuardV4Address,
+            operatorAddress: config.operatorAddress,
+            agentNfaAddress: config.agentNfaAddress,
+        });
+    }
 
     async check(action: ActionPayload, _context: ExecutionContext): Promise<PolicyCheckResult> {
         // Skip if no PolicyGuardV4 configured
@@ -68,37 +52,29 @@ export class HardPolicyGuard implements IGuardrails {
         }
 
         try {
-            const [ok, reason] = await this.config.publicClient.readContract({
-                address: this.config.policyGuardV4Address,
-                abi: POLICY_GUARD_V4_VALIDATE_ABI,
-                functionName: "validate",
-                args: [
-                    this.config.agentNfaAddress,
-                    this.tokenId,
-                    this.config.vaultAddress,
-                    this.config.operatorAddress,
-                    {
-                        target: action.target,
-                        value: action.value,
-                        data: action.data,  // full calldata with selector
-                    },
-                ],
-            }) as [boolean, string];
+            const result = await this.simulator.simulateAction(
+                this.tokenId,
+                this.config.vaultAddress,
+                {
+                    target: action.target,
+                    value: action.value,
+                    data: action.data,
+                }
+            );
 
-            if (!ok) {
+            if (!result.ok) {
                 return {
                     ok: false,
                     violations: [{
                         code: "HARD_POLICY_REJECTED",
                         policy: "PolicyGuardV4",
-                        message: reason || "On-chain policy check failed",
+                        message: result.reason || "On-chain policy check failed",
                     }],
                 };
             }
 
             return { ok: true, violations: [] };
         } catch (error) {
-            // If the call reverts, treat it as a policy failure
             const message = error instanceof Error ? error.message : "PolicyGuardV4 call failed";
             return {
                 ok: false,

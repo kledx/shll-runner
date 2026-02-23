@@ -146,6 +146,8 @@ export interface RunRecord {
     gasUsed?: string;
     /** P-2026-027: realized PnL in USD (positive = profit) */
     pnlUsd?: string;
+    /** P-2026-032: policy violation code from guardrails check (SOFT_* / HARD_*) */
+    violationCode?: string;
     createdAt: string;
 }
 

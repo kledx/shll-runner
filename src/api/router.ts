@@ -20,6 +20,7 @@ import type { Pool } from "pg";
 import { handleSafetyRoutes } from "./safety.js";
 import { handleAdminRoutes } from "./admin.js";
 import { handlePerformanceRoutes } from "./performance.js";
+import { handleSafetyMetricsRoutes } from "./safety-metrics.js";
 
 export interface V3RouterContext {
     pool: Pool;
@@ -76,6 +77,13 @@ export async function handleV3Routes(
         chainId: ctx.chainId,
     });
     if (perfHandled) return true;
+
+    // P-2026-032: Safety SLA metrics routes (read-only, no auth required)
+    const safetyMetricsHandled = await handleSafetyMetricsRoutes(method, pathname, req, res, {
+        pool: ctx.pool,
+        chainId: ctx.chainId,
+    });
+    if (safetyMetricsHandled) return true;
 
     return false;
 }
