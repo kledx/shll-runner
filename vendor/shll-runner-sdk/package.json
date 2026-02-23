@@ -1,0 +1,29 @@
+{
+    "name": "@shll/runner-sdk",
+    "version": "1.0.0",
+    "description": "SDK for building SHLL runners and interacting with the AgentNFA protocol",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "type": "module",
+    "scripts": {
+        "build": "tsup",
+        "dev": "tsup --watch",
+        "lint": "eslint src/ --ext .ts"
+    },
+    "keywords": [
+        "shll",
+        "agent",
+        "runner",
+        "web3"
+    ],
+    "author": "",
+    "peerDependencies": {
+        "viem": "^2.0.0"
+    },
+    "devDependencies": {
+        "@types/node": "^25.3.0",
+        "tsup": "^8.0.2",
+        "typescript": "^5.4.5",
+        "viem": "^2.0.0"
+    }
+}
