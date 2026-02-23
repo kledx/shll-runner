@@ -142,6 +142,10 @@ export interface RunRecord {
     decisionReason?: string;
     /** V3.2: user-facing message from LLM agent */
     decisionMessage?: string;
+    /** P-2026-027: gas consumed by the transaction */
+    gasUsed?: string;
+    /** P-2026-027: realized PnL in USD (positive = profit) */
+    pnlUsd?: string;
     createdAt: string;
 }
 

@@ -19,6 +19,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { handleSafetyRoutes } from "./safety.js";
 import { handleAdminRoutes } from "./admin.js";
+import { handlePerformanceRoutes } from "./performance.js";
 
 export interface V3RouterContext {
     pool: Pool;
@@ -68,6 +69,13 @@ export async function handleV3Routes(
         });
         if (adminHandled) return true;
     }
+
+    // P-2026-027: Performance dashboard routes (read-only, no auth required)
+    const perfHandled = await handlePerformanceRoutes(method, pathname, req, res, {
+        pool: ctx.pool,
+        chainId: ctx.chainId,
+    });
+    if (perfHandled) return true;
 
     return false;
 }
