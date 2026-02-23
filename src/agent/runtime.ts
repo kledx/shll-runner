@@ -243,6 +243,18 @@ export async function runAgentCycle(
         };
     }
 
+    // Store the decision so circuit breaker can detect new instructions
+    await agent.memory.store({
+        type: "decision",
+        action: decision.action,
+        params: decisionParams,
+        reasoning: decision.reasoning,
+        timestamp: new Date(),
+    });
+
+    // Re-read memories so circuit breaker sees the fresh decision entry
+    const freshMemories = await agent.memory.recall(20);
+
     // Circuit breaker for repeated failing actions
     // Auto-resets when: (a) a successful execution exists, (b) user sent a new instruction
     // (decision entry), or (c) failures are older than 30 minutes.
@@ -250,7 +262,7 @@ export async function runAgentCycle(
     const CIRCUIT_BREAKER_THRESHOLD = 3;
     let consecutiveFailures = 0;
     const windowCutoff = Date.now() - CIRCUIT_BREAKER_WINDOW_MS;
-    for (const m of memories) {
+    for (const m of freshMemories) {
         // Reset on any successful execution
         if (m.type === "execution" && m.result?.success) break;
         // Reset when a new user instruction was issued (agent re-planned)
