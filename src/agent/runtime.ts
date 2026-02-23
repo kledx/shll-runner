@@ -244,10 +244,21 @@ export async function runAgentCycle(
     }
 
     // Circuit breaker for repeated failing actions
+    // Auto-resets when: (a) a successful execution exists, (b) user sent a new instruction
+    // (decision entry), or (c) failures are older than 30 minutes.
+    const CIRCUIT_BREAKER_WINDOW_MS = 30 * 60 * 1000; // 30 min
+    const CIRCUIT_BREAKER_THRESHOLD = 3;
     let consecutiveFailures = 0;
+    const windowCutoff = Date.now() - CIRCUIT_BREAKER_WINDOW_MS;
     for (const m of memories) {
+        // Reset on any successful execution
         if (m.type === "execution" && m.result?.success) break;
+        // Reset when a new user instruction was issued (agent re-planned)
+        if (m.type === "decision") break;
+        // Reset on observation entries
         if (m.type === "observation") break;
+        // Ignore failures older than the time window
+        if (m.timestamp && m.timestamp.getTime() < windowCutoff) break;
         if (
             m.action === decision.action &&
             (m.type === "blocked" ||
@@ -257,8 +268,8 @@ export async function runAgentCycle(
         }
     }
 
-    if (consecutiveFailures >= 3) {
-        const blockMsg = `Circuit Breaker Triggered: The action '${decision.action}' has failed 3 consecutive times. Agent paused to protect gas. Please check your vault balance or fix the issue before resuming.`;
+    if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+        const blockMsg = `Circuit Breaker Triggered: The action '${decision.action}' has failed ${CIRCUIT_BREAKER_THRESHOLD} consecutive times within ${CIRCUIT_BREAKER_WINDOW_MS / 60000} minutes. Agent paused to protect gas. Please send a new instruction to reset, or wait for automatic recovery.`;
         await agent.memory.store({
             type: "blocked",
             action: decision.action,
@@ -272,7 +283,7 @@ export async function runAgentCycle(
             acted: false,
             action: "wait",
             reasoning:
-                "Circuit breaker triggered due to consecutive failures. Hardware/policy intervention required.",
+                "Circuit breaker triggered due to consecutive failures. Will auto-reset on new instruction or after 30 minutes.",
             message: blockMsg,
             blocked: true,
             blockReason: blockMsg,
