@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget && rm -rf 
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/vendor ./vendor
 COPY --from=builder /app/package.json ./
 
 ENV NODE_ENV=production
