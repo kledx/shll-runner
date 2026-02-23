@@ -40,6 +40,17 @@ export interface UserSafetyConfig {
 //               Soft Policy Engine
 // ═══════════════════════════════════════════════════════
 
+function formatBnb(wei: bigint): string {
+    const ZERO = 0n;
+    const DECIMALS = 10n ** 18n;
+    if (wei === ZERO) return "0";
+    const ethPart = wei / DECIMALS;
+    const remainder = wei % DECIMALS;
+    if (remainder === ZERO) return ethPart.toString();
+    const fracStr = remainder.toString().padStart(18, "0").slice(0, 4).replace(/0+$/, "");
+    return fracStr ? `${ethPart}.${fracStr}` : ethPart.toString();
+}
+
 export class SoftPolicyEngine implements IGuardrails {
     constructor(
         private tokenId: bigint,
@@ -80,7 +91,7 @@ export class SoftPolicyEngine implements IGuardrails {
                 violations.push({
                     code: "SOFT_MAX_TRADE_AMOUNT",
                     policy: "maxTradeAmount",
-                    message: `Trade amount ${tradeAmount} exceeds per-trade limit ${maxTrade}`,
+                    message: `Trade amount ${formatBnb(tradeAmount)} exceeds per-trade limit ${formatBnb(maxTrade)}`,
                 });
             }
         }
@@ -121,7 +132,7 @@ export class SoftPolicyEngine implements IGuardrails {
                 violations.push({
                     code: "SOFT_MAX_DAILY_AMOUNT",
                     policy: "maxDailyAmount",
-                    message: `Would exceed daily limit: spent=${todaySpent}, tx=${tradeAmount}, max=${maxDaily}`,
+                    message: `Would exceed daily limit: spent=${formatBnb(todaySpent)}, tx=${formatBnb(tradeAmount)}, max=${formatBnb(maxDaily)}`,
                 });
             }
         }
