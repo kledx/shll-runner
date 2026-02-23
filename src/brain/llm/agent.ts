@@ -301,6 +301,7 @@ export class LLMBrain implements IBrain {
             "- Valid actions for final decision: " + writeActions.join(", ") + ", or 'wait'",
             "- For swap: ALWAYS include router, tokenIn, tokenOut, amountIn, AND minOut (all in wei). Use the PancakeSwap V2 Router address above.",
             "  IMPORTANT: minOut MUST be non-zero! Calculate it as: expectedOutput * (1 - slippage). Use 2-5% slippage tolerance.",
+            "- For wrap: ALWAYS include direction ('wrap' or 'unwrap') and amount (in wei). wrap = BNB to WBNB, unwrap = WBNB to BNB.",
             "",
             "## Two-Step Swap Workflow (CRITICAL — READ CAREFULLY)",
             "- MANDATORY RULE: You MUST call `get_allowance` BEFORE EVER outputting action='approve'.",
