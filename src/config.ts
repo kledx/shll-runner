@@ -78,6 +78,11 @@ export const config = {
         ["WBNB_ADDRESS"],
         "0x0000000000000000000000000000000000000000"
     ) as `0x${string}`,
+    // V4: Subscription model
+    subscriptionManagerAddress: optionalAny(
+        ["SUBSCRIPTION_MANAGER_ADDRESS"],
+        "0x0000000000000000000000000000000000000000"
+    ) as `0x${string}`,
 
     // LLM configuration (for llm_trader strategy)
     llmApiKey: optionalAny(["LLM_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"], ""),

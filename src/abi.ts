@@ -129,3 +129,43 @@ export const AgentNFAAbi = [
         stateMutability: "view",
     },
 ] as const;
+
+// SubscriptionManager: subscription lifecycle reads
+export const SubscriptionManagerAbi = [
+    {
+        type: "function",
+        name: "getEffectiveStatus",
+        inputs: [{ name: "instanceId", type: "uint256" }],
+        outputs: [{ name: "", type: "uint8" }],
+        stateMutability: "view",
+    },
+    {
+        type: "function",
+        name: "canExecute",
+        inputs: [{ name: "instanceId", type: "uint256" }],
+        outputs: [{ name: "", type: "bool" }],
+        stateMutability: "view",
+    },
+    {
+        type: "function",
+        name: "getSubscription",
+        inputs: [{ name: "instanceId", type: "uint256" }],
+        outputs: [
+            {
+                name: "",
+                type: "tuple",
+                components: [
+                    { name: "subscriber", type: "address" },
+                    { name: "listingId", type: "bytes32" },
+                    { name: "currentPeriodEnd", type: "uint64" },
+                    { name: "gracePeriodEnd", type: "uint64" },
+                    { name: "pricePerPeriod", type: "uint96" },
+                    { name: "periodDays", type: "uint32" },
+                    { name: "gracePeriodDays", type: "uint32" },
+                    { name: "status", type: "uint8" },
+                ],
+            },
+        ],
+        stateMutability: "view",
+    },
+] as const;

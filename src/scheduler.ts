@@ -150,6 +150,22 @@ export async function runSingleToken(
     if (!acquiredDbLock) return false;
 
     try {
+        // V4: Subscription status check — skip non-active subscriptions
+        const subStatus = await chain.readSubscriptionStatus(tokenId);
+        if (
+            subStatus === "GracePeriod" ||
+            subStatus === "Expired" ||
+            subStatus === "Canceled"
+        ) {
+            if (agentManager.isActive(tokenId)) {
+                agentManager.stopAgent(tokenId);
+            }
+            log.info(
+                `[V4][${tokenId.toString()}] Subscription ${subStatus} — agent paused`,
+            );
+            return false;
+        }
+
         // P-2026-018: Skip LLM agents with no tradingGoal (standby mode)
         const strategyPre = await store.getStrategy(tokenId);
         const isLlmAgent = strategyPre?.strategyType?.startsWith("llm_");
@@ -235,6 +251,8 @@ export async function runSingleToken(
                 ),
                 runMode: shadowMode ? "shadow" : "primary",
                 shadowCompare: result.shadowComparison,
+                violationCode: result.errorCode?.startsWith("SOFT_") || result.errorCode?.startsWith("HARD_")
+                    ? result.errorCode : undefined,
                 ...blockedFailure,
             });
 

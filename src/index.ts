@@ -35,6 +35,7 @@ async function main(): Promise<void> {
         rpcRetryCount: config.rpcRetryCount,
         operatorPrivateKey: config.operatorPrivateKey,
         agentNfaAddress: config.agentNfaAddress,
+        subscriptionManagerAddress: config.subscriptionManagerAddress,
     });
 
     bootstrapAgentModules({
