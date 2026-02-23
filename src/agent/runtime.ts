@@ -262,10 +262,13 @@ export async function runAgentCycle(
     const CIRCUIT_BREAKER_THRESHOLD = 3;
     let consecutiveFailures = 0;
     const windowCutoff = Date.now() - CIRCUIT_BREAKER_WINDOW_MS;
-    for (const m of freshMemories) {
+    for (let i = 0; i < freshMemories.length; i++) {
+        const m = freshMemories[i];
+        // Skip the decision entry we just wrote above (always at index 0)
+        if (i === 0 && m.type === "decision" && m.action === decision.action) continue;
         // Reset on any successful execution
         if (m.type === "execution" && m.result?.success) break;
-        // Reset when a new user instruction was issued (agent re-planned)
+        // Reset when a PREVIOUS user instruction was issued (agent re-planned)
         if (m.type === "decision") break;
         // Reset on observation entries
         if (m.type === "observation") break;
