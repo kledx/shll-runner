@@ -127,7 +127,7 @@ var MinimalAgentNFAAbi = [
           { "internalType": "uint256", "name": "tokenId", "type": "uint256" },
           { "internalType": "address", "name": "renter", "type": "address" },
           { "internalType": "address", "name": "operator", "type": "address" },
-          { "internalType": "uint256", "name": "expires", "type": "uint256" },
+          { "internalType": "uint64", "name": "expires", "type": "uint64" },
           { "internalType": "uint256", "name": "nonce", "type": "uint256" },
           { "internalType": "uint256", "name": "deadline", "type": "uint256" }
         ],

@@ -294,9 +294,9 @@ declare const MinimalAgentNFAAbi: readonly [{
             readonly name: "operator";
             readonly type: "address";
         }, {
-            readonly internalType: "uint256";
+            readonly internalType: "uint64";
             readonly name: "expires";
-            readonly type: "uint256";
+            readonly type: "uint64";
         }, {
             readonly internalType: "uint256";
             readonly name: "nonce";
