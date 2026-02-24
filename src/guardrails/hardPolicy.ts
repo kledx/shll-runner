@@ -63,12 +63,19 @@ export class HardPolicyGuard implements IGuardrails {
             );
 
             if (!result.ok) {
+                const isWhitelistError = (result.reason ?? "").toLowerCase().includes("not in whitelist");
+                // Phase 4: Enrich whitelist errors with token address from context
+                const metadata: Record<string, string> | undefined =
+                    isWhitelistError && _context.actionTokens && _context.actionTokens.length > 0
+                        ? { tokenAddress: _context.actionTokens[_context.actionTokens.length - 1] }
+                        : undefined;
                 return {
                     ok: false,
                     violations: [{
                         code: "HARD_POLICY_REJECTED",
                         policy: "PolicyGuardV4",
                         message: result.reason || "On-chain policy check failed",
+                        metadata,
                     }],
                 };
             }

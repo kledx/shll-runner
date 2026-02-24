@@ -461,7 +461,7 @@ export async function runAgentCycle(
         const firstViolation = safetyResult.violations[0];
         const blockMsg = firstViolation?.message ?? "Policy violation";
         const policyFailure = classifyFailureFromPolicyViolation(firstViolation?.code);
-        const userMessage = `Action blocked by safety policy: ${blockMsg}`;
+        let userMessage = `Action blocked by safety policy: ${blockMsg}`;
 
         await agent.memory.store({
             type: "blocked",
@@ -478,12 +478,17 @@ export async function runAgentCycle(
 
         // Phase 4: Build actionable error for frontend inline buttons
         let actionableError: ActionableError | undefined;
-        if (firstViolation?.code === "SOFT_ALLOWED_TOKENS" && firstViolation.metadata?.tokenAddress) {
+        const isWhitelistViolation =
+            (firstViolation?.code === "SOFT_ALLOWED_TOKENS" ||
+                (firstViolation?.code === "HARD_POLICY_REJECTED" && firstViolation.message?.toLowerCase().includes("not in whitelist")));
+        if (isWhitelistViolation && firstViolation?.metadata?.tokenAddress) {
             actionableError = {
                 type: "TOKEN_NOT_WHITELISTED",
                 tokenAddress: firstViolation.metadata.tokenAddress,
                 instanceId: agent.tokenId.toString(),
             };
+            // Enrich the user message with token address so frontend regex can extract it
+            userMessage = `Action blocked by safety policy: Token ${firstViolation.metadata.tokenAddress} is not in your allowed tokens list`;
         }
 
         return {
