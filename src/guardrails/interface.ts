@@ -35,6 +35,8 @@ export interface PolicyViolation {
     policy: string;
     /** Human-readable rejection reason */
     message: string;
+    /** Structured metadata for frontend actionable errors (e.g. tokenAddress) */
+    metadata?: Record<string, string>;
 }
 
 export interface PolicyCheckResult {

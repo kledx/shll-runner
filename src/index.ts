@@ -36,6 +36,7 @@ async function main(): Promise<void> {
         operatorPrivateKey: config.operatorPrivateKey,
         agentNfaAddress: config.agentNfaAddress,
         subscriptionManagerAddress: config.subscriptionManagerAddress,
+        cooldownPolicyAddress: config.cooldownPolicyAddress,
     });
 
     bootstrapAgentModules({

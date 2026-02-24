@@ -187,3 +187,14 @@ export const SubscriptionManagerAbi = [
         stateMutability: "view",
     },
 ] as const;
+
+// CooldownPolicy: read cooldown configuration for dynamic backoff
+export const CooldownPolicyAbi = [
+    {
+        type: "function",
+        name: "cooldownSeconds",
+        inputs: [{ name: "instanceId", type: "uint256" }],
+        outputs: [{ name: "", type: "uint256" }],
+        stateMutability: "view",
+    },
+] as const;

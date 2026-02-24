@@ -149,6 +149,7 @@ export class SoftPolicyEngine implements IGuardrails {
                         code: "SOFT_ALLOWED_TOKENS",
                         policy: "allowedTokens",
                         message: `Token ${token} is not in your allowed tokens list`,
+                        metadata: { tokenAddress: token },
                     });
                 }
             }

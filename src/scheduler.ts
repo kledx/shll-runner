@@ -308,10 +308,31 @@ export async function runSingleToken(
                 return true;
             }
 
-            const nextCheckAt = new Date(Date.now() + BLOCKED_BACKOFF_MS);
+            // t6: Dynamic backoff for cooldown blocks — read actual cooldownSeconds from chain
+            let backoffMs = BLOCKED_BACKOFF_MS;
+            const isCooldownBlock =
+                result.errorCode === "BUSINESS_POLICY_COOLDOWN" ||
+                (result.blockReason?.toLowerCase().includes("cooldown") ?? false);
+
+            if (isCooldownBlock) {
+                try {
+                    const chainCd = await chain.readCooldownSeconds(tokenId);
+                    if (chainCd > 0) {
+                        // Add 5s buffer above on-chain cooldown to avoid race
+                        backoffMs = chainCd * 1000 + 5_000;
+                        log.info(
+                            `[t6][${tokenId.toString()}] Dynamic cooldown backoff: ${chainCd}s (on-chain) + 5s buffer = ${backoffMs / 1000}s`,
+                        );
+                    }
+                } catch {
+                    // Chain read failed — fall back to default
+                }
+            }
+
+            const nextCheckAt = new Date(Date.now() + backoffMs);
             await store.updateNextCheckAt(tokenId, nextCheckAt);
             log.info(
-                `[V3][${tokenId.toString()}] Blocked (${count}/${MAX_BLOCKED_RETRIES}) — backoff ${BLOCKED_BACKOFF_MS / 1000}s: ${result.blockReason ?? "unknown"}`,
+                `[V3][${tokenId.toString()}] Blocked (${count}/${MAX_BLOCKED_RETRIES}) — backoff ${backoffMs / 1000}s: ${result.blockReason ?? "unknown"}`,
             );
             return true;
         }

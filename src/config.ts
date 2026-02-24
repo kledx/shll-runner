@@ -83,6 +83,11 @@ export const config = {
         ["SUBSCRIPTION_MANAGER_ADDRESS"],
         "0x0000000000000000000000000000000000000000"
     ) as `0x${string}`,
+    // t6: CooldownPolicy for dynamic backoff
+    cooldownPolicyAddress: optionalAny(
+        ["COOLDOWN_POLICY_ADDRESS"],
+        "0x0000000000000000000000000000000000000000"
+    ) as `0x${string}`,
 
     // LLM configuration (for llm_trader strategy)
     llmApiKey: optionalAny(["LLM_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"], ""),

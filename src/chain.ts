@@ -10,7 +10,7 @@ import type { Address, Hex } from "viem";
 import { createPublicClient, http, encodeFunctionData } from "viem";
 import { bscTestnet } from "viem/chains";
 import { ChainReader, TransactionBuilder, MinimalAgentNFAAbi } from "@shll/runner-sdk";
-import { SubscriptionManagerAbi, AgentNFAAbi } from "./abi.js";
+import { SubscriptionManagerAbi, AgentNFAAbi, CooldownPolicyAbi } from "./abi.js";
 import { erc20Abi } from "viem";
 import type {
     ActionPayload,
@@ -57,6 +57,7 @@ export interface ChainServices {
     readSubscriptionStatus: (tokenId: bigint) => Promise<
         "None" | "Active" | "GracePeriod" | "Expired" | "Canceled"
     >;
+    readCooldownSeconds: (instanceId: bigint) => Promise<number>;
 }
 
 interface ChainConfig {
@@ -66,6 +67,7 @@ interface ChainConfig {
     operatorPrivateKey: `0x${string}`;
     agentNfaAddress: `0x${string}`;
     subscriptionManagerAddress?: `0x${string}`;
+    cooldownPolicyAddress?: `0x${string}`;
 }
 
 export function createChainServices(config: ChainConfig): ChainServices {
@@ -263,6 +265,23 @@ export function createChainServices(config: ChainConfig): ChainServices {
         }
     }
 
+    // Read on-chain cooldown configuration for dynamic backoff
+    async function readCooldownSeconds(instanceId: bigint): Promise<number> {
+        const cooldownAddr = config.cooldownPolicyAddress;
+        if (!cooldownAddr) return 0;
+        try {
+            const result = await reader.publicClient.readContract({
+                address: cooldownAddr as Address,
+                abi: CooldownPolicyAbi,
+                functionName: "cooldownSeconds",
+                args: [instanceId],
+            });
+            return Number(result);
+        } catch {
+            return 0;
+        }
+    }
+
     return {
         publicClient: reader.publicClient as any,
         account: { address: builder.accountAddress },
@@ -275,5 +294,6 @@ export function createChainServices(config: ChainConfig): ChainServices {
         readAllowance,
         readAgentType,
         readSubscriptionStatus,
+        readCooldownSeconds,
     };
 }

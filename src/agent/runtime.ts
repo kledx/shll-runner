@@ -13,6 +13,12 @@ import type { RunFailureCategory, RunErrorCode } from "../runFailure.js";
 import { classifyFailureFromPolicyViolation } from "../runFailure.js";
 import { buildExecutionPlan, buildLegacyExecutionPlan } from "./planner.js";
 
+export interface ActionableError {
+    type: "TOKEN_NOT_WHITELISTED" | "DEX_NOT_WHITELISTED";
+    tokenAddress?: string;
+    instanceId?: string;
+}
+
 export interface RunResult {
     acted: boolean;
     action: string;
@@ -28,6 +34,7 @@ export interface RunResult {
     errorCode?: RunErrorCode;
     executionTrace?: ExecutionTraceEntry[];
     shadowComparison?: ShadowComparison;
+    actionableError?: ActionableError;
 }
 
 export interface RunCycleOptions {
@@ -468,6 +475,17 @@ export async function runAgentCycle(
             policy: firstViolation?.policy,
             violationCode: firstViolation?.code,
         });
+
+        // Phase 4: Build actionable error for frontend inline buttons
+        let actionableError: ActionableError | undefined;
+        if (firstViolation?.code === "SOFT_ALLOWED_TOKENS" && firstViolation.metadata?.tokenAddress) {
+            actionableError = {
+                type: "TOKEN_NOT_WHITELISTED",
+                tokenAddress: firstViolation.metadata.tokenAddress,
+                instanceId: agent.tokenId.toString(),
+            };
+        }
+
         return {
             acted: false,
             action: plan.actionName,
@@ -482,6 +500,7 @@ export async function runAgentCycle(
             errorCode: policyFailure.errorCode,
             executionTrace,
             shadowComparison,
+            actionableError,
         };
     }
 
