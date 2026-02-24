@@ -55,12 +55,22 @@ export function buildUserPrompt(
         : ["  No price data"];
 
     // Recent history — include error details so LLM can distinguish failure types
+    // Phase 4: Filter out whitelist/policy errors that are handled by the UI inline buttons.
+    // If these remain in context, LLM sees them on the next cycle and preemptively refuses
+    // to submit the swap — defeating the inline whitelist button UX.
+    const POLICY_HANDLED_PATTERNS = [
+        /not in your allowed tokens list/i,
+    ];
     const historyLines = memories.slice(0, 10).map(m => {
         const ts = m.timestamp.toISOString().slice(0, 19);
         const action = m.action ?? "N/A";
         const status = m.result?.success === true ? "OK" :
             m.result?.success === false ? "FAIL" : "-";
-        const errorInfo = m.result?.error ? ` [ERROR: ${m.result.error}]` : "";
+        let errorInfo = m.result?.error ? ` [ERROR: ${m.result.error}]` : "";
+        // Strip policy-handled errors — replace with generic hint so LLM doesn't refuse
+        if (errorInfo && POLICY_HANDLED_PATTERNS.some(p => p.test(errorInfo))) {
+            errorInfo = " [POLICY: handled by user — retry if instructed]";
+        }
         return `  [${ts}] ${status} ${m.type}: ${action}${errorInfo} — ${m.reasoning ?? ""}`;
     });
 
