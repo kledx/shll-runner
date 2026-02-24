@@ -267,8 +267,9 @@ export async function runSingleToken(
             }
         }
 
-        // Blocked backoff: if agent is blocked (prerequisites not met), back off 5 min
-        const BLOCKED_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+        // Blocked backoff: if agent is blocked (prerequisites not met), back off
+        // Default 65s = slightly above on-chain cooldown (60s) to avoid wasted retries
+        const BLOCKED_BACKOFF_MS = parseInt(process.env.BLOCKED_BACKOFF_MS ?? "65000", 10);
         if (result.blocked) {
             const key = tokenId.toString();
             const count = (blockedCounts.get(key) ?? 0) + 1;
@@ -525,7 +526,7 @@ export async function runSingleToken(
             const count = (blockedCounts.get(key) ?? 0) + 1;
             blockedCounts.set(key, count);
 
-            const BLOCKED_BACKOFF_MS = 5 * 60 * 1000;
+            const BLOCKED_BACKOFF_MS = parseInt(process.env.BLOCKED_BACKOFF_MS ?? "65000", 10);
             if (count >= MAX_BLOCKED_RETRIES) {
                 await store.clearTradingGoal(tokenId);
                 agentManager.stopAgent(tokenId);
