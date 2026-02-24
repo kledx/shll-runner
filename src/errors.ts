@@ -17,6 +17,7 @@ const ERROR_PATTERNS: Array<[RegExp, string]> = [
 
     // Chain / contract errors
     [/insufficient funds/i, "Insufficient gas funds. Please add BNB to the Agent Account."],
+    // PolicyViolation is handled specially in sanitizeForUser (see below)
     [/execution reverted/i, "Transaction was rejected by the contract. Check your parameters."],
     [/nonce too low/i, "Transaction conflict detected. Retrying."],
     [/replacement transaction underpriced/i, "Transaction conflict detected. Retrying."],
@@ -33,6 +34,13 @@ const ERROR_PATTERNS: Array<[RegExp, string]> = [
  * Raw details are stripped; only a friendly message is returned.
  */
 export function sanitizeForUser(rawError: string): string {
+    // Extract PolicyViolation reason first — show the actual policy reason to user
+    const policyMatch = rawError.match(/PolicyViolation\(string reason\)\s*\(([^)]+)\)/i)
+        ?? rawError.match(/PolicyViolation[^(]*\(([^)]+)\)/i);
+    if (policyMatch) {
+        return `Safety policy: ${policyMatch[1].trim()}`;
+    }
+
     for (const [pattern, friendly] of ERROR_PATTERNS) {
         if (pattern.test(rawError)) {
             return friendly;
