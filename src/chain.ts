@@ -7,9 +7,9 @@
  */
 
 import type { Address, Hex } from "viem";
-import { createPublicClient, http } from "viem";
+import { createPublicClient, http, encodeFunctionData } from "viem";
 import { bscTestnet } from "viem/chains";
-import { ChainReader, TransactionBuilder } from "@shll/runner-sdk";
+import { ChainReader, TransactionBuilder, MinimalAgentNFAAbi } from "@shll/runner-sdk";
 import { SubscriptionManagerAbi } from "./abi.js";
 import type {
     ActionPayload,
@@ -119,13 +119,46 @@ export function createChainServices(config: ChainConfig): ChainServices {
         tokenId: bigint,
         action: ActionPayload,
     ): Promise<ActionResult> {
-        const result = await builder.executeAction(tokenId, action);
+        // GAS-FIX: bypass SDK's simulateContract → writeContract (no gas buffer).
+        // SHLL's deeply nested call chain (Operator → NFA → PolicyGuard.validate →
+        // AgentAccount.executeCall → DEX router → PolicyGuard.commit) frequently
+        // exhausts viem's default gas estimate. We estimate manually and apply 1.5x buffer.
+        const walletClient = builder.walletClient;
+        const account = walletClient.account!;
+
+        // Step 1: estimate gas for the execute call
+        const gasEstimate = await reader.publicClient.estimateContractGas({
+            address: config.agentNfaAddress as Address,
+            abi: MinimalAgentNFAAbi,
+            functionName: "execute",
+            args: [tokenId, action],
+            account: account,
+        });
+
+        // Step 2: apply 50% buffer (nested calls need headroom)
+        const gasLimit = gasEstimate * 3n / 2n;
+
+        // Step 3: encode and submit with explicit gas
+        const data = encodeFunctionData({
+            abi: MinimalAgentNFAAbi,
+            functionName: "execute",
+            args: [tokenId, action],
+        });
+
+        const hash = await walletClient.sendTransaction({
+            to: config.agentNfaAddress as Address,
+            data: data as Hex,
+            gas: gasLimit,
+            account,
+            chain: null,
+        } as any);
+
         const receipt = await reader.publicClient.waitForTransactionReceipt({
-            hash: result.hash,
+            hash,
         });
 
         return {
-            hash: result.hash,
+            hash,
             receiptStatus: receipt.status,
             receiptBlock: receipt.blockNumber.toString(),
         };
