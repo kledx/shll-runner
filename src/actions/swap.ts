@@ -235,7 +235,7 @@ export function createSwapAction(): IAction {
                         const approveData = encodeFunctionData({
                             abi: ERC20_APPROVE_ABI,
                             functionName: "approve",
-                            args: [router as Address, MAX_UINT256],
+                            args: [router as Address, amountIn],
                         });
                         const approvePayload: ActionPayload = {
                             target: tokenIn as Address,
