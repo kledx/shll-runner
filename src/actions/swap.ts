@@ -15,6 +15,24 @@ import { encodeFunctionData, type Address, type Hex } from "viem";
 import type { IAction, ActionPayload } from "./interface.js";
 import { getChainAddressBook, normalizeKnownAddressForChain } from "../chainDefaults.js";
 
+// ── ERC20 Approve ABI (for auto-approve in batch) ──────
+const ERC20_APPROVE_ABI = [
+    {
+        type: "function" as const,
+        name: "approve",
+        inputs: [
+            { name: "spender", type: "address" },
+            { name: "amount", type: "uint256" },
+        ],
+        outputs: [{ name: "", type: "bool" }],
+        stateMutability: "nonpayable" as const,
+    },
+] as const;
+
+const MAX_UINT256 = BigInt(
+    "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+);
+
 // ── ABI fragments ──────────────────────────────────────
 
 const SWAP_EXACT_TOKENS_ABI = [
@@ -99,7 +117,7 @@ export function createSwapAction(): IAction {
             required: ["router", "tokenIn", "tokenOut", "amountIn"],
         },
 
-        encode(params: Record<string, unknown>): ActionPayload {
+        async encode(params: Record<string, unknown>): Promise<ActionPayload | ActionPayload[]> {
             const routerRaw = params.router as string;
             const tokenInRaw = params.tokenIn as string;
             const tokenOutRaw = params.tokenOut as string;
@@ -171,6 +189,9 @@ export function createSwapAction(): IAction {
                 path = [pathIn, pathOut];
             }
 
+            // Build the swap payload
+            let swapPayload: ActionPayload;
+
             if (isNativeIn) {
                 // BNB → ERC20: swapExactETHForTokens
                 const data = encodeFunctionData({
@@ -178,25 +199,60 @@ export function createSwapAction(): IAction {
                     functionName: "swapExactETHForTokens",
                     args: [minOut, path, vault, deadline],
                 });
-                return {
+                swapPayload = {
                     target: router as Address,
                     value: amountIn,
                     data: data as Hex,
                 };
+            } else {
+                // ERC20 → ERC20 (or ERC20 → WBNB when user wants BNB)
+                // Always use swapExactTokensForTokens — safe for smart contract wallets
+                const data = encodeFunctionData({
+                    abi: SWAP_EXACT_TOKENS_ABI,
+                    functionName: "swapExactTokensForTokens",
+                    args: [amountIn, minOut, path, vault, deadline],
+                });
+                swapPayload = {
+                    target: router as Address,
+                    value: 0n,
+                    data: data as Hex,
+                };
             }
 
-            // ERC20 → ERC20 (or ERC20 → WBNB when user wants BNB)
-            // Always use swapExactTokensForTokens — safe for smart contract wallets
-            const data = encodeFunctionData({
-                abi: SWAP_EXACT_TOKENS_ABI,
-                functionName: "swapExactTokensForTokens",
-                args: [amountIn, minOut, path, vault, deadline],
-            });
-            return {
-                target: router as Address,
-                value: 0n,
-                data: data as Hex,
-            };
+            // Auto-approve: check allowance and prepend approve if needed.
+            // Uses __readAllowance injected by runtime (async chain read).
+            // When approve is needed, returns [approve, swap] for executeBatch.
+            if (!isNativeIn && params.__readAllowance) {
+                const readAllowance = params.__readAllowance as (
+                    token: string, owner: string, spender: string,
+                ) => Promise<bigint>;
+                try {
+                    const currentAllowance = await readAllowance(
+                        tokenIn, vault, router,
+                    );
+                    if (currentAllowance < amountIn) {
+                        // Encode approve payload
+                        const approveData = encodeFunctionData({
+                            abi: ERC20_APPROVE_ABI,
+                            functionName: "approve",
+                            args: [router as Address, MAX_UINT256],
+                        });
+                        const approvePayload: ActionPayload = {
+                            target: tokenIn as Address,
+                            value: 0n,
+                            data: approveData as Hex,
+                        };
+                        // Return batch: [approve, swap]
+                        return [approvePayload, swapPayload];
+                    }
+                } catch {
+                    // Allowance check failed — proceed with swap only.
+                    // If approve is actually needed, the on-chain tx will revert
+                    // and the LLM can handle it in the next cycle.
+                }
+            }
+
+            return swapPayload;
         },
     };
 }

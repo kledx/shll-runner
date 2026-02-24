@@ -210,6 +210,7 @@ export async function runSingleToken(
         const result = await runAgentCycle(agent, {
             shadowCompare: shadowMode,
             minActionConfidence: config.llmMinActionConfidence,
+            readAllowance: chain.readAllowance,
         });
         cycleTrace = [...(result.executionTrace ?? [])];
         log.info(
@@ -352,9 +353,12 @@ export async function runSingleToken(
         }
 
         if (shadowMode && !config.shadowExecuteTx) {
+            const primaryPayload = Array.isArray(result.payload)
+                ? result.payload[result.payload.length - 1]
+                : result.payload;
             const hash = keccak256(
                 stringToHex(
-                    `${result.payload.target.toLowerCase()}:${result.payload.value.toString()}:${result.payload.data.toLowerCase()}`,
+                    `${primaryPayload.target.toLowerCase()}:${primaryPayload.value.toString()}:${primaryPayload.data.toLowerCase()}`,
                 ),
             );
             await store.recordRun({
@@ -391,13 +395,17 @@ export async function runSingleToken(
                 cycleTrace,
                 "execute",
                 "ok",
-                "Submitting transaction on-chain",
+                Array.isArray(result.payload)
+                    ? `Submitting batch (${result.payload.length} actions) on-chain`
+                    : "Submitting transaction on-chain",
                 { action: result.action },
             );
-            const txResult = await chain.executeAction(
-                tokenId,
-                result.payload,
-            );
+
+            // Dispatch: batch payloads → executeBatchAction, single → executeAction
+            const txResult = Array.isArray(result.payload)
+                ? await chain.executeBatchAction(tokenId, result.payload)
+                : await chain.executeAction(tokenId, result.payload);
+
             txTrace = appendTrace(
                 txTrace,
                 "verify",
@@ -406,10 +414,11 @@ export async function runSingleToken(
                 {
                     txHash: txResult.hash,
                     receiptStatus: txResult.receiptStatus,
+                    isBatch: Array.isArray(result.payload),
                 },
             );
             log.info(
-                `[V3][${tokenId.toString()}] TX confirmed block=${txResult.receiptBlock} status=${txResult.receiptStatus}`,
+                `[V3][${tokenId.toString()}] TX confirmed block=${txResult.receiptBlock} status=${txResult.receiptStatus}${Array.isArray(result.payload) ? ` (batch=${result.payload.length})` : ""}`,
             );
 
             // Record execution in agent memory
@@ -422,9 +431,12 @@ export async function runSingleToken(
             );
 
             // Record in run history for dashboard
+            const primaryPayload = Array.isArray(result.payload)
+                ? result.payload[result.payload.length - 1]
+                : result.payload;
             const hash = keccak256(
                 stringToHex(
-                    `${result.payload.target.toLowerCase()}:${result.payload.value.toString()}:${result.payload.data.toLowerCase()}`,
+                    `${primaryPayload.target.toLowerCase()}:${primaryPayload.value.toString()}:${primaryPayload.data.toLowerCase()}`,
                 ),
             );
             await store.recordRun({

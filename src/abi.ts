@@ -34,6 +34,24 @@ export const AgentNFAAbi = [
     },
     {
         type: "function",
+        name: "executeBatch",
+        inputs: [
+            { name: "tokenId", type: "uint256" },
+            {
+                name: "actions",
+                type: "tuple[]",
+                components: [
+                    { name: "target", type: "address" },
+                    { name: "value", type: "uint256" },
+                    { name: "data", type: "bytes" },
+                ],
+            },
+        ],
+        outputs: [{ name: "results", type: "bytes[]" }],
+        stateMutability: "nonpayable",
+    },
+    {
+        type: "function",
         name: "operatorOf",
         inputs: [{ name: "tokenId", type: "uint256" }],
         outputs: [{ name: "", type: "address" }],

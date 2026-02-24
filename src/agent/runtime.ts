@@ -19,7 +19,7 @@ export interface RunResult {
     reasoning: string;
     message?: string;
     params?: Record<string, unknown>;
-    payload?: ActionPayload;
+    payload?: ActionPayload | ActionPayload[];
     blocked: boolean;
     blockReason?: string;
     done?: boolean;
@@ -33,6 +33,8 @@ export interface RunResult {
 export interface RunCycleOptions {
     shadowCompare?: boolean;
     minActionConfidence?: number;
+    /** Injected by scheduler for swap auto-approve batch support */
+    readAllowance?: (token: string, owner: string, spender: string) => Promise<bigint>;
 }
 
 function addTrace(
@@ -401,16 +403,28 @@ export async function runAgentCycle(
     }
 
     addTrace(executionTrace, "validate", "ok", "Write action validated");
-    const payload = actionModule.encode({
+    const encodeParams: Record<string, unknown> = {
         ...plan.params,
         vault: agent.vault,
-    });
+    };
+    // Inject readAllowance for swap auto-approve batching
+    if (options?.readAllowance) {
+        encodeParams.__readAllowance = options.readAllowance;
+    }
+    const payload = await Promise.resolve(actionModule.encode(encodeParams));
+
+    // For batch payloads (e.g. [approve, swap]), extract the primary action payload
+    // (last in array = the main action) for guardrails and metadata.
+    const isBatch = Array.isArray(payload);
+    const primaryPayload: ActionPayload = isBatch
+        ? payload[payload.length - 1]
+        : payload;
 
     const amountInRaw = plan.params.amountIn as string | undefined;
     const minOutRaw = plan.params.minOut as string | undefined;
     const amountInBig = amountInRaw ? BigInt(amountInRaw) : undefined;
     const minOutBig = minOutRaw ? BigInt(minOutRaw) : undefined;
-    const spendAmount = payload.value > 0n ? payload.value : (amountInBig ?? 0n);
+    const spendAmount = primaryPayload.value > 0n ? primaryPayload.value : (amountInBig ?? 0n);
 
     const actionTokens: string[] = [];
     if (plan.params.tokenIn) {
@@ -435,7 +449,7 @@ export async function runAgentCycle(
         minOut: minOutBig,
     };
 
-    const safetyResult = await agent.guardrails.check(payload, context);
+    const safetyResult = await agent.guardrails.check(primaryPayload, context);
     if (!safetyResult.ok) {
         const firstViolation = safetyResult.violations[0];
         const blockMsg = firstViolation?.message ?? "Policy violation";
@@ -472,12 +486,12 @@ export async function runAgentCycle(
     }
 
     addTrace(executionTrace, "simulate", "ok", "Guardrails preflight passed");
-    addTrace(executionTrace, "execute", "ok", "Payload ready for scheduler");
+    addTrace(executionTrace, "execute", "ok", isBatch ? "Batch payload ready for scheduler" : "Payload ready for scheduler");
 
     const enrichedParams = {
         ...plan.params,
         vault: agent.vault,
-        txValue: payload.value.toString(),
+        txValue: primaryPayload.value.toString(),
     };
 
     return {

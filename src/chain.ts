@@ -10,7 +10,8 @@ import type { Address, Hex } from "viem";
 import { createPublicClient, http, encodeFunctionData } from "viem";
 import { bscTestnet } from "viem/chains";
 import { ChainReader, TransactionBuilder, MinimalAgentNFAAbi } from "@shll/runner-sdk";
-import { SubscriptionManagerAbi } from "./abi.js";
+import { SubscriptionManagerAbi, AgentNFAAbi } from "./abi.js";
+import { erc20Abi } from "viem";
 import type {
     ActionPayload,
     ActionResult,
@@ -43,6 +44,15 @@ export interface ChainServices {
         tokenId: bigint,
         action: ActionPayload,
     ) => Promise<ActionResult>;
+    executeBatchAction: (
+        tokenId: bigint,
+        actions: ActionPayload[],
+    ) => Promise<ActionResult>;
+    readAllowance: (
+        token: string,
+        owner: string,
+        spender: string,
+    ) => Promise<bigint>;
     readAgentType: (tokenId: bigint) => Promise<string>;
     readSubscriptionStatus: (tokenId: bigint) => Promise<
         "None" | "Active" | "GracePeriod" | "Expired" | "Canceled"
@@ -164,6 +174,63 @@ export function createChainServices(config: ChainConfig): ChainServices {
         };
     }
 
+    async function executeBatchAction(
+        tokenId: bigint,
+        actions: ActionPayload[],
+    ): Promise<ActionResult> {
+        // Same gas strategy as executeAction but for batched calls
+        const walletClient = builder.walletClient;
+        const account = walletClient.account!;
+
+        const gasEstimate = await reader.publicClient.estimateContractGas({
+            address: config.agentNfaAddress as Address,
+            abi: AgentNFAAbi,
+            functionName: "executeBatch",
+            args: [tokenId, actions],
+            account: account,
+        });
+
+        const gasLimit = gasEstimate * 3n / 2n;
+
+        const data = encodeFunctionData({
+            abi: AgentNFAAbi,
+            functionName: "executeBatch",
+            args: [tokenId, actions],
+        });
+
+        const hash = await walletClient.sendTransaction({
+            to: config.agentNfaAddress as Address,
+            data: data as Hex,
+            gas: gasLimit,
+            account,
+            chain: null,
+        } as any);
+
+        const receipt = await reader.publicClient.waitForTransactionReceipt({
+            hash,
+        });
+
+        return {
+            hash,
+            receiptStatus: receipt.status,
+            receiptBlock: receipt.blockNumber.toString(),
+        };
+    }
+
+    async function readAllowance(
+        token: string,
+        owner: string,
+        spender: string,
+    ): Promise<bigint> {
+        const allowance = await reader.publicClient.readContract({
+            address: token as Address,
+            abi: erc20Abi,
+            functionName: "allowance",
+            args: [owner as Address, spender as Address],
+        });
+        return allowance as bigint;
+    }
+
     async function readAgentType(tokenId: bigint): Promise<string> {
         return reader.readAgentType(tokenId);
     }
@@ -204,6 +271,8 @@ export function createChainServices(config: ChainConfig): ChainServices {
         enableOperatorWithPermit,
         clearOperator,
         executeAction,
+        executeBatchAction,
+        readAllowance,
         readAgentType,
         readSubscriptionStatus,
     };

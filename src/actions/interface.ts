@@ -85,8 +85,11 @@ export interface IAction {
      * Encode decision params into an on-chain ActionPayload.
      * For readonly actions, this returns a "no-op" payload (backward compat).
      *
+     * May return an array of payloads for batch execution (e.g. approve+swap).
+     * The scheduler will use executeBatch when an array is returned.
+     *
      * @param params Decision parameters from Brain
-     * @returns ActionPayload ready for chain submission
+     * @returns ActionPayload or ActionPayload[] ready for chain submission
      */
-    encode(params: Record<string, unknown>): ActionPayload;
+    encode(params: Record<string, unknown>): ActionPayload | ActionPayload[] | Promise<ActionPayload | ActionPayload[]>;
 }
