@@ -3,13 +3,14 @@
  *
  * Reads on-chain state: vault balances (native + ERC20), block data.
  * Prices and gas are fetched via RPC calls.
- * Dynamic token discovery via BSCScan tokentx API.
+ * Dynamic token discovery via ERC20 Transfer event logs (no external API needed).
  */
 
 import type { Address, PublicClient } from "viem";
 import type { IPerception, Observation, TokenBalance } from "./interface.js";
+import { parseAbiItem } from "viem";
 
-// ERC20 balanceOf ABI fragment
+// ERC20 balanceOf + symbol + decimals ABI fragments
 const ERC20_BALANCE_OF_ABI = [
     {
         inputs: [{ name: "account", type: "address" }],
@@ -20,14 +21,34 @@ const ERC20_BALANCE_OF_ABI = [
     },
 ] as const;
 
-// BSCScan API for token discovery
-const CHAIN_ID = Number(process.env.CHAIN_ID || "97");
-const IS_MAINNET = CHAIN_ID === 56;
-const BSCSCAN_API = IS_MAINNET
-    ? "https://api.bscscan.com/api"
-    : "https://api-testnet.bscscan.com/api";
-const BSCSCAN_API_KEY = process.env.BSCSCAN_API_KEY || "";
-const DISCOVERY_CACHE_MS = 60_000; // Re-discover every 60s
+const ERC20_SYMBOL_ABI = [
+    {
+        inputs: [],
+        name: "symbol",
+        outputs: [{ name: "", type: "string" }],
+        stateMutability: "view",
+        type: "function",
+    },
+] as const;
+
+const ERC20_DECIMALS_ABI = [
+    {
+        inputs: [],
+        name: "decimals",
+        outputs: [{ name: "", type: "uint8" }],
+        stateMutability: "view",
+        type: "function",
+    },
+] as const;
+
+// ERC20 Transfer event signature for getLogs
+const TRANSFER_EVENT = parseAbiItem(
+    "event Transfer(address indexed from, address indexed to, uint256 value)"
+);
+
+// Discovery settings
+const DISCOVERY_CACHE_MS = 120_000; // Re-discover every 120s
+const DISCOVERY_BLOCK_RANGE = 200_000n; // ~7 days of BSC blocks
 
 // ═══════════════════════════════════════════════════════
 //            Tracked Token Config
@@ -68,64 +89,78 @@ export class DefiPerception implements IPerception {
         this.trackedTokens = config.trackedTokens ?? [];
     }
 
-    /** Discover tokens via BSCScan tokentx API (cached) */
+    /** Discover tokens via ERC20 Transfer event logs (RPC-based, cached) */
     private async discoverTokens(): Promise<void> {
         const now = Date.now();
         if (now - this.lastDiscovery < DISCOVERY_CACHE_MS) return;
         this.lastDiscovery = now;
 
         try {
+            const { publicClient } = this.config;
             const knownAddrs = new Set(
                 this.trackedTokens.map(t => t.address.toLowerCase()),
             );
 
-            const params = new URLSearchParams({
-                module: "account",
-                action: "tokentx",
-                address: this.vault,
-                startblock: "0",
-                endblock: "99999999",
-                page: "1",
-                offset: "100",
-                sort: "desc",
+            // Scan Transfer events TO the vault address in recent blocks
+            const latestBlock = await publicClient.getBlockNumber();
+            const fromBlock = latestBlock > DISCOVERY_BLOCK_RANGE
+                ? latestBlock - DISCOVERY_BLOCK_RANGE
+                : 0n;
+
+            const logs = await publicClient.getLogs({
+                event: TRANSFER_EVENT,
+                args: { to: this.vault },
+                fromBlock,
+                toBlock: latestBlock,
             });
-            if (BSCSCAN_API_KEY) params.set("apikey", BSCSCAN_API_KEY);
 
-            const resp = await fetch(`${BSCSCAN_API}?${params.toString()}`, {
-                signal: AbortSignal.timeout(8_000),
-            });
-            if (!resp.ok) return;
-
-            const data = (await resp.json()) as {
-                status: string;
-                result: Array<{
-                    contractAddress: string;
-                    tokenSymbol: string;
-                    tokenDecimal: string;
-                }>;
-            };
-            if (data.status !== "1" || !Array.isArray(data.result)) return;
-
+            // Extract unique token contract addresses
             const seen = new Set<string>();
-            const discovered: TrackedToken[] = [];
-            for (const tx of data.result) {
-                const addr = tx.contractAddress.toLowerCase();
+            const newTokenAddrs: Address[] = [];
+            for (const log of logs) {
+                const addr = log.address.toLowerCase();
                 if (seen.has(addr) || knownAddrs.has(addr)) continue;
                 seen.add(addr);
-                discovered.push({
-                    address: tx.contractAddress as Address,
-                    symbol: tx.tokenSymbol || "???",
-                    decimals: Number.parseInt(tx.tokenDecimal, 10) || 18,
-                });
+                newTokenAddrs.push(log.address as Address);
             }
+
+            if (newTokenAddrs.length === 0) return;
+
+            // Read symbol + decimals for each discovered token
+            const discovered: TrackedToken[] = [];
+            for (const addr of newTokenAddrs) {
+                try {
+                    const [symbol, decimals] = await Promise.all([
+                        publicClient.readContract({
+                            address: addr,
+                            abi: ERC20_SYMBOL_ABI,
+                            functionName: "symbol",
+                        }).catch(() => "???"),
+                        publicClient.readContract({
+                            address: addr,
+                            abi: ERC20_DECIMALS_ABI,
+                            functionName: "decimals",
+                        }).catch(() => 18),
+                    ]);
+                    discovered.push({
+                        address: addr,
+                        symbol: symbol as string,
+                        decimals: Number(decimals),
+                    });
+                } catch {
+                    // Skip tokens we can't read metadata for
+                }
+            }
+
             this.discoveredTokens = discovered;
             if (discovered.length > 0) {
                 console.log(
                     `[Perception] Discovered ${discovered.length} extra token(s): ${discovered.map(t => t.symbol).join(", ")}`,
                 );
             }
-        } catch {
+        } catch (err) {
             // Silently fail — discovery is optional
+            console.warn(`[Perception] Token discovery failed:`, err);
         }
     }
 
