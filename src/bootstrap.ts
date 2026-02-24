@@ -102,6 +102,7 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
         agentNfaAddress: config.agentNfaAddress,
         agentNfaAbi: config.agentNfaAbi,
         trackedTokens,
+        pool: config.pool,
     };
 
     // ── Perception ─────────────────────────────────────

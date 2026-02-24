@@ -3,14 +3,14 @@
  *
  * Reads on-chain state: vault balances (native + ERC20), block data.
  * Prices and gas are fetched via RPC calls.
- * Dynamic token discovery via ERC20 Transfer event logs (no external API needed).
+ * Dynamic token discovery via agent_memory DB (swap history).
  */
 
 import type { Address, PublicClient } from "viem";
+import type { Pool } from "pg";
 import type { IPerception, Observation, TokenBalance } from "./interface.js";
-import { parseAbiItem } from "viem";
 
-// ERC20 balanceOf + symbol + decimals ABI fragments
+// ERC20 ABI fragments
 const ERC20_BALANCE_OF_ABI = [
     {
         inputs: [{ name: "account", type: "address" }],
@@ -41,14 +41,8 @@ const ERC20_DECIMALS_ABI = [
     },
 ] as const;
 
-// ERC20 Transfer event signature for getLogs
-const TRANSFER_EVENT = parseAbiItem(
-    "event Transfer(address indexed from, address indexed to, uint256 value)"
-);
-
 // Discovery settings
-const DISCOVERY_CACHE_MS = 120_000; // Re-discover every 120s
-const DISCOVERY_BLOCK_RANGE = 200_000n; // ~7 days of BSC blocks
+const DISCOVERY_CACHE_MS = 300_000; // Re-discover every 5 min (DB query is cheap)
 
 // ═══════════════════════════════════════════════════════
 //            Tracked Token Config
@@ -74,6 +68,8 @@ export interface DefiPerceptionConfig {
     agentNfaAbi: readonly unknown[];
     /** ERC20 tokens to track in the vault (auto-reads balanceOf) */
     trackedTokens?: TrackedToken[];
+    /** PostgreSQL pool for querying swap history */
+    pool?: Pool;
 }
 
 export class DefiPerception implements IPerception {
@@ -89,61 +85,65 @@ export class DefiPerception implements IPerception {
         this.trackedTokens = config.trackedTokens ?? [];
     }
 
-    /** Discover tokens via ERC20 Transfer event logs (RPC-based, cached) */
+    /**
+     * Discover tokens from swap history in agent_memory DB.
+     * Extracts unique tokenIn/tokenOut addresses from past swap actions.
+     * Then reads symbol + decimals on-chain for any new tokens found.
+     */
     private async discoverTokens(): Promise<void> {
         const now = Date.now();
         if (now - this.lastDiscovery < DISCOVERY_CACHE_MS) return;
         this.lastDiscovery = now;
 
+        if (!this.config.pool) return;
+
         try {
-            const { publicClient } = this.config;
+            const { publicClient, pool } = this.config;
             const knownAddrs = new Set(
                 this.trackedTokens.map(t => t.address.toLowerCase()),
             );
 
-            // Scan Transfer events TO the vault address in recent blocks
-            const latestBlock = await publicClient.getBlockNumber();
-            const fromBlock = latestBlock > DISCOVERY_BLOCK_RANGE
-                ? latestBlock - DISCOVERY_BLOCK_RANGE
-                : 0n;
+            // Query unique token addresses from swap params in agent_memory
+            const result = await pool!.query(
+                `SELECT DISTINCT
+                    params->>'tokenIn' AS token_in,
+                    params->>'tokenOut' AS token_out
+                 FROM agent_memory
+                 WHERE token_id = $1 AND action = 'swap' AND params IS NOT NULL
+                 ORDER BY token_out`,
+                [this.tokenId.toString()],
+            );
 
-            const logs = await publicClient.getLogs({
-                event: TRANSFER_EVENT,
-                args: { to: this.vault },
-                fromBlock,
-                toBlock: latestBlock,
-            });
-
-            // Extract unique token contract addresses
-            const seen = new Set<string>();
-            const newTokenAddrs: Address[] = [];
-            for (const log of logs) {
-                const addr = log.address.toLowerCase();
-                if (seen.has(addr) || knownAddrs.has(addr)) continue;
-                seen.add(addr);
-                newTokenAddrs.push(log.address as Address);
+            // Collect unique addresses not in static list
+            const newAddrs = new Set<string>();
+            for (const row of result.rows) {
+                for (const addr of [row.token_in, row.token_out]) {
+                    if (addr && !knownAddrs.has(addr.toLowerCase())) {
+                        newAddrs.add(addr);
+                    }
+                }
             }
 
-            if (newTokenAddrs.length === 0) return;
+            if (newAddrs.size === 0) return;
 
-            // Read symbol + decimals for each discovered token
+            // Read symbol + decimals for new tokens
             const discovered: TrackedToken[] = [];
-            for (const addr of newTokenAddrs) {
+            for (const addr of newAddrs) {
                 try {
                     const [symbol, decimals] = await Promise.all([
                         publicClient.readContract({
-                            address: addr,
+                            address: addr as Address,
                             abi: ERC20_SYMBOL_ABI,
                             functionName: "symbol",
                         }).catch(() => "???"),
                         publicClient.readContract({
-                            address: addr,
+                            address: addr as Address,
                             abi: ERC20_DECIMALS_ABI,
                             functionName: "decimals",
                         }).catch(() => 18),
                     ]);
                     discovered.push({
-                        address: addr,
+                        address: addr as Address,
                         symbol: symbol as string,
                         decimals: Number(decimals),
                     });
@@ -155,11 +155,10 @@ export class DefiPerception implements IPerception {
             this.discoveredTokens = discovered;
             if (discovered.length > 0) {
                 console.log(
-                    `[Perception] Discovered ${discovered.length} extra token(s): ${discovered.map(t => t.symbol).join(", ")}`,
+                    `[Perception] Discovered ${discovered.length} token(s) from swap history: ${discovered.map(t => t.symbol).join(", ")}`,
                 );
             }
         } catch (err) {
-            // Silently fail — discovery is optional
             console.warn(`[Perception] Token discovery failed:`, err);
         }
     }
@@ -167,7 +166,7 @@ export class DefiPerception implements IPerception {
     async observe(): Promise<Observation> {
         const { publicClient, agentNfaAddress, agentNfaAbi } = this.config;
 
-        // Discover tokens dynamically (cached, non-blocking on failure)
+        // Discover tokens from DB (cached, lightweight)
         await this.discoverTokens();
 
         // Merge static + discovered tokens
@@ -207,7 +206,7 @@ export class DefiPerception implements IPerception {
                 balance: erc20Balances[i] as bigint,
                 decimals: token.decimals,
             }))
-            .filter((tb) => tb.balance > 0n); // Only include tokens with non-zero balance
+            .filter((tb) => tb.balance > 0n);
 
         if (vaultBalances.length > 0) {
             console.log(
