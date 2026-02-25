@@ -92,4 +92,11 @@ export interface IAction {
      * @returns ActionPayload or ActionPayload[] ready for chain submission
      */
     encode(params: Record<string, unknown>): ActionPayload | ActionPayload[] | Promise<ActionPayload | ActionPayload[]>;
+
+    /**
+     * Optional: Receive per-blueprint configuration.
+     * Called by the factory during agent assembly if the blueprint
+     * specifies action config via ActionConfig.config.
+     */
+    configure?(config: Record<string, unknown>): void;
 }

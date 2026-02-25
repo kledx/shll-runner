@@ -14,6 +14,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import { writeJson, parseBody } from "../http.js";
+import { blueprintStore } from "../agent/blueprintStore.js";
+import { listRegisteredActions, listRegisteredBrains, listRegisteredPerceptions } from "../agent/factory.js";
 
 export interface AdminRouteContext {
     pool: Pool;
@@ -77,6 +79,36 @@ export async function handleAdminRoutes(
             return true;
         }
 
+        // Phase 4: Validate that referenced modules exist
+        const registeredBrains = listRegisteredBrains();
+        if (!registeredBrains.includes(brainType)) {
+            writeJson(res, 400, {
+                error: `Brain module not registered: ${brainType}`,
+                registered: registeredBrains,
+            });
+            return true;
+        }
+
+        const registeredPerceptions = listRegisteredPerceptions();
+        if (!registeredPerceptions.includes(perception)) {
+            writeJson(res, 400, {
+                error: `Perception module not registered: ${perception}`,
+                registered: registeredPerceptions,
+            });
+            return true;
+        }
+
+        const registeredActions = listRegisteredActions();
+        const actionNames = actions.map((a: unknown) => typeof a === "string" ? a : (a as { name: string }).name);
+        const unknown = actionNames.filter((n: string) => !registeredActions.includes(n));
+        if (unknown.length > 0) {
+            writeJson(res, 400, {
+                error: `Action modules not registered: ${unknown.join(", ")}`,
+                registered: registeredActions,
+            });
+            return true;
+        }
+
         await ctx.pool.query(
             `INSERT INTO agent_blueprints (agent_type, brain_type, actions, perception, llm_config, created_by)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -100,6 +132,8 @@ export async function handleAdminRoutes(
             [agentType],
         );
         writeJson(res, 200, { ok: true, blueprint: mapBlueprintRow(result.rows[0]) });
+        // Hot-reload blueprint cache
+        void blueprintStore.reload();
         return true;
     }
 
@@ -114,6 +148,8 @@ export async function handleAdminRoutes(
             return true;
         }
         writeJson(res, 200, { ok: true, deleted: agentType });
+        // Hot-reload blueprint cache
+        void blueprintStore.reload();
         return true;
     }
 

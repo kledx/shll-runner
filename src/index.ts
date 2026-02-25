@@ -21,6 +21,7 @@ import { AgentNFAAbi } from "./abi.js";
 import { startApiServer } from "./api/server.js";
 import { startScheduler } from "./scheduler.js";
 import { runMarketSignalSyncLoop } from "./market/signalSync.js";
+import { blueprintStore } from "./agent/blueprintStore.js";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000" as const;
 const log = createLogger(config.logLevel);
@@ -28,6 +29,11 @@ const log = createLogger(config.logLevel);
 async function main(): Promise<void> {
     const store = new RunnerStore(config);
     await store.init();
+
+    // Load agent blueprints from DB (hardcoded fallback always available)
+    await blueprintStore.init(store.getPool());
+    const bpStats = blueprintStore.stats();
+    log.info(`[V3] BlueprintStore loaded: ${bpStats.dbCount} from DB, ${bpStats.builtinCount} built-in`);
 
     const chain = createChainServices({
         rpcUrl: config.rpcUrl,

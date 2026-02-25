@@ -47,12 +47,22 @@ export interface Agent {
 export interface AgentBlueprint {
     /** Brain type identifier: "rule:hotToken" | "llm" */
     brain: string;
-    /** Action module names to include: ["swap", "approve", "analytics", ...] */
-    actions: string[];
-    /** Perception module name: "defi" */
-    perception: string;
+    /** Action module names or configs to include */
+    actions: (string | ActionConfig)[];
+    /** Perception module(s): single string or array for multi-perception */
+    perception: string | string[];
     /** LLM configuration (only if brain starts with "llm") */
     llmConfig?: LLMConfig;
+}
+
+/** Per-action configuration within a blueprint */
+export interface ActionConfig {
+    /** Action module name (must match a registered action) */
+    name: string;
+    /** Whether this action is enabled (default: true) */
+    enabled?: boolean;
+    /** Action-specific configuration passed to action.configure() */
+    config?: Record<string, unknown>;
 }
 
 /** LLM-specific configuration within a blueprint */

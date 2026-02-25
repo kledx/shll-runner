@@ -2,56 +2,19 @@
  * Agent Factory — Assembles Agent instances from chain data + blueprints.
  *
  * 1. Reads agentType from on-chain AgentNFA
- * 2. Looks up AgentBlueprint (hardcoded registry, future: DB table)
+ * 2. Looks up AgentBlueprint (DB cache → hardcoded fallback)
  * 3. Instantiates 5 capability modules
  * 4. Returns a fully assembled Agent
  */
 
 import type { Address } from "viem";
-import type { Agent, AgentBlueprint, LLMConfig } from "./agent.js";
+import type { Agent, AgentBlueprint, LLMConfig, ActionConfig } from "./agent.js";
 import type { IPerception } from "../perception/interface.js";
 import type { IMemory } from "../memory/interface.js";
 import type { IBrain } from "../brain/interface.js";
 import type { IAction } from "../actions/interface.js";
 import type { IGuardrails } from "../guardrails/interface.js";
-
-// ═══════════════════════════════════════════════════════
-//                  Blueprint Registry
-// ═══════════════════════════════════════════════════════
-
-/**
- * Built-in agent blueprints.
- * Future: load from `agent_blueprints` DB table for no-code composition.
- */
-const AGENT_BLUEPRINTS: Record<string, AgentBlueprint> = {
-    hot_token: {
-        brain: "rule:hotToken",
-        actions: ["swap", "approve", "analytics"],
-        perception: "defi",
-    },
-    llm_trader: {
-        brain: "llm",
-        actions: ["swap", "approve", "wrap", "analytics", "portfolio", "allowance"],
-        perception: "defi",
-        llmConfig: {
-            systemPrompt: "You are a DeFi trading agent. Analyze market data and vault positions to make profitable trades. Be conservative and prioritize capital preservation.",
-            provider: "openai",
-            model: "gpt-4o-mini",
-            maxStepsPerRun: 5,
-        },
-    },
-    llm_defi: {
-        brain: "llm",
-        actions: ["swap", "approve", "wrap", "analytics", "portfolio", "allowance"],
-        perception: "defi",
-        llmConfig: {
-            systemPrompt: "You are an advanced DeFi agent capable of multi-step strategies. Analyze positions, market trends, and optimize yield across protocols.",
-            provider: "deepseek",
-            model: "deepseek-chat",
-            maxStepsPerRun: 5,
-        },
-    },
-};
+import { blueprintStore } from "./blueprintStore.js";
 
 // ═══════════════════════════════════════════════════════
 //                 Brain Config Context
@@ -104,6 +67,21 @@ export function registerMemory(factory: (tokenId: bigint) => IMemory): void {
     memoryFactory.create = factory;
 }
 
+/** Get all registered action names (for blueprint validation) */
+export function listRegisteredActions(): string[] {
+    return [...actionRegistry.keys()];
+}
+
+/** Get all registered brain names */
+export function listRegisteredBrains(): string[] {
+    return [...brainRegistry.keys()];
+}
+
+/** Get all registered perception names */
+export function listRegisteredPerceptions(): string[] {
+    return [...perceptionRegistry.keys()];
+}
+
 // ═══════════════════════════════════════════════════════
 //                    Chain Data Input
 // ═══════════════════════════════════════════════════════
@@ -125,20 +103,27 @@ export interface ChainAgentData {
 /**
  * Create an Agent instance from chain data.
  *
+ * Blueprint lookup: DB cache → hardcoded fallback → error
+ *
  * @param data  On-chain agent metadata + DB strategy params
  * @returns     Fully assembled Agent
  * @throws      If agentType has no blueprint or required modules are missing
  */
 export function createAgent(data: ChainAgentData): Agent {
-    const blueprint = AGENT_BLUEPRINTS[data.agentType];
+    // DB cache → hardcoded fallback
+    const blueprint = blueprintStore.get(data.agentType);
     if (!blueprint) {
         throw new Error(`No blueprint found for agentType: ${data.agentType}`);
     }
 
-    // Perception
-    const percFactory = perceptionRegistry.get(blueprint.perception);
+    // Perception — supports single string or array
+    const perceptionNames = Array.isArray(blueprint.perception)
+        ? blueprint.perception
+        : [blueprint.perception];
+    const primaryPerception = perceptionNames[0];
+    const percFactory = perceptionRegistry.get(primaryPerception);
     if (!percFactory) {
-        throw new Error(`Perception module not registered: ${blueprint.perception}`);
+        throw new Error(`Perception module not registered: ${primaryPerception}`);
     }
 
     // Brain — receives both blueprint llmConfig and per-agent strategyParams
@@ -147,14 +132,29 @@ export function createAgent(data: ChainAgentData): Agent {
         throw new Error(`Brain module not registered: ${blueprint.brain}`);
     }
 
-    // Actions
+    // Actions — supports string or ActionConfig
     const actions: IAction[] = [];
-    for (const actionName of blueprint.actions) {
-        const actFactory = actionRegistry.get(actionName);
+    for (const entry of blueprint.actions) {
+        const isConfig = typeof entry !== "string";
+        const name = isConfig ? (entry as ActionConfig).name : entry;
+        const actionConfig = isConfig ? (entry as ActionConfig) : undefined;
+
+        // Skip disabled actions
+        if (actionConfig?.enabled === false) continue;
+
+        const actFactory = actionRegistry.get(name);
         if (!actFactory) {
-            throw new Error(`Action module not registered: ${actionName}`);
+            throw new Error(`Action module not registered: ${name}`);
         }
-        actions.push(actFactory());
+
+        const action = actFactory();
+
+        // Pass blueprint-level config to action if available
+        if (actionConfig?.config && action.configure) {
+            action.configure(actionConfig.config);
+        }
+
+        actions.push(action);
     }
 
     // Guardrails
@@ -187,10 +187,10 @@ export function createAgent(data: ChainAgentData): Agent {
 
 /** Get a blueprint by agentType (for inspection) */
 export function getBlueprint(agentType: string): AgentBlueprint | undefined {
-    return AGENT_BLUEPRINTS[agentType];
+    return blueprintStore.get(agentType);
 }
 
 /** List all registered agent types */
 export function listAgentTypes(): string[] {
-    return Object.keys(AGENT_BLUEPRINTS);
+    return blueprintStore.listTypes();
 }
