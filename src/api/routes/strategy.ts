@@ -14,8 +14,10 @@ export async function handleStrategyRoutes(
     req: IncomingMessage,
     res: ServerResponse,
     ctx: ApiServerContext,
+    url?: URL,
 ): Promise<boolean> {
     const { store, agentManager, log } = ctx;
+    const parsedUrl = url ?? new URL(req.url ?? "/", "http://localhost");
 
     // ── Strategy Upsert ────────────────────────────
     if (method === "POST" && pathname === "/strategy/upsert") {
@@ -87,9 +89,8 @@ export async function handleStrategyRoutes(
 
     // ── Strategy Query ─────────────────────────────
     if (method === "GET" && pathname === "/strategy") {
-        const url = new URL(req.url ?? "/", "http://localhost");
         const query = parseStrategyQuery({
-            tokenId: url.searchParams.get("tokenId") ?? undefined,
+            tokenId: parsedUrl.searchParams.get("tokenId") ?? undefined,
         });
         if (query.tokenId != null) {
             const tokenId = BigInt(query.tokenId);

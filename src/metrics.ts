@@ -14,6 +14,7 @@ export interface MetricsSnapshot {
     gauges: Record<string, number>;
 }
 
+/** Note: not thread-safe — relies on Node.js single-threaded event loop */
 class MetricsRegistry {
     private startedAt = Date.now();
     private counters = new Map<string, number>();

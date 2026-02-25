@@ -55,8 +55,9 @@ export class RunnerError extends Error {
     /** Check if an unknown error is retryable */
     static isRetryable(err: unknown): boolean {
         if (err instanceof RunnerError) return err.retryable;
-        // Classify raw errors to determine retryability
         const message = err instanceof Error ? err.message : String(err);
+        // Nonce errors mean the previous TX already landed — never retry
+        if (/nonce too low|replacement transaction underpriced/i.test(message)) return false;
         const classified = classifyFailureFromError(message);
         return classified.failureCategory === "infrastructure_error";
     }
@@ -77,6 +78,8 @@ export interface RetryOptions {
     label?: string;
     /** Custom predicate to decide if an error is retryable. Default: RunnerError.isRetryable */
     isRetryable?: (err: unknown) => boolean;
+    /** Optional structured logger — falls back to console.warn if not provided */
+    logger?: { warn: (...args: unknown[]) => void };
 }
 
 /**
@@ -93,6 +96,7 @@ export async function withRetry<T>(
     const exponential = opts?.exponential ?? true;
     const label = opts?.label ?? "operation";
     const isRetryable = opts?.isRetryable ?? RunnerError.isRetryable;
+    const log = opts?.logger ?? { warn: (...args: unknown[]) => console.warn(...args) };
 
     let lastError: unknown;
 
@@ -109,7 +113,7 @@ export async function withRetry<T>(
             const delay = exponential
                 ? baseDelayMs * Math.pow(2, attempt - 1)
                 : baseDelayMs;
-            console.warn(
+            log.warn(
                 `  [Retry] ${label} attempt ${attempt}/${maxAttempts} failed, retrying in ${delay}ms...`,
             );
             await new Promise((resolve) => setTimeout(resolve, delay));

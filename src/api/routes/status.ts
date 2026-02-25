@@ -17,18 +17,20 @@ export async function handleStatusRoutes(
     req: IncomingMessage,
     res: ServerResponse,
     ctx: ApiServerContext,
+    url?: URL,
+    requireAuth?: () => boolean,
 ): Promise<boolean> {
     const { store, chain, config } = ctx;
 
     if (method !== "GET") return false;
 
-    const url = new URL(req.url ?? "/", "http://localhost");
+    const parsedUrl = url ?? new URL(req.url ?? "/", "http://localhost");
 
     // ── Status (single token) ──────────────────────
     if (pathname === "/status") {
         const query = parseStatusQuery({
-            tokenId: url.searchParams.get("tokenId") ?? undefined,
-            runsLimit: url.searchParams.get("runsLimit") ?? undefined,
+            tokenId: parsedUrl.searchParams.get("tokenId") ?? undefined,
+            runsLimit: parsedUrl.searchParams.get("runsLimit") ?? undefined,
         });
         const tokenId = query.tokenId ?? config.tokenId;
         const runsLimit = query.runsLimit ?? config.statusRunsLimit;
@@ -78,8 +80,8 @@ export async function handleStatusRoutes(
     // ── Shadow Metrics ─────────────────────────────
     if (pathname === "/shadow/metrics") {
         const query = parseShadowMetricsQuery({
-            tokenId: url.searchParams.get("tokenId") ?? undefined,
-            sinceHours: url.searchParams.get("sinceHours") ?? undefined,
+            tokenId: parsedUrl.searchParams.get("tokenId") ?? undefined,
+            sinceHours: parsedUrl.searchParams.get("sinceHours") ?? undefined,
         });
         const report = await store.getShadowMetrics({
             tokenId: query.tokenId,
@@ -94,7 +96,7 @@ export async function handleStatusRoutes(
 
     // ── Agent Dashboard ────────────────────────────
     if (pathname === "/agent/dashboard") {
-        const tokenIdParam = url.searchParams.get("tokenId");
+        const tokenIdParam = parsedUrl.searchParams.get("tokenId");
         if (!tokenIdParam) {
             writeJson(res, 400, { error: "tokenId is required" });
             return true;
@@ -111,15 +113,15 @@ export async function handleStatusRoutes(
 
     // ── Agent Activity ─────────────────────────────
     if (pathname === "/agent/activity") {
-        const tokenIdParam = url.searchParams.get("tokenId");
+        const tokenIdParam = parsedUrl.searchParams.get("tokenId");
         if (!tokenIdParam) {
             writeJson(res, 400, { error: "tokenId is required" });
             return true;
         }
         const tokenId = BigInt(tokenIdParam);
-        const limitRaw = url.searchParams.get("limit");
-        const offsetRaw = url.searchParams.get("offset");
-        const brainType = url.searchParams.get("brainType") ?? undefined;
+        const limitRaw = parsedUrl.searchParams.get("limit");
+        const offsetRaw = parsedUrl.searchParams.get("offset");
+        const brainType = parsedUrl.searchParams.get("brainType") ?? undefined;
         const result = await store.getActivity(tokenId, {
             limit: limitRaw ? Number.parseInt(limitRaw, 10) : undefined,
             offset: offsetRaw ? Number.parseInt(offsetRaw, 10) : undefined,
@@ -168,6 +170,11 @@ export async function handleStatusRoutes(
 
     // ── Metrics ─────────────────────────────────────
     if (pathname === "/metrics") {
+        // Protect metrics with API key when configured
+        if (requireAuth && !requireAuth()) {
+            writeJson(res, 401, { error: "unauthorized" });
+            return true;
+        }
         const accept = req.headers.accept ?? "";
         if (accept.includes("text/plain") || accept.includes("text/prometheus")) {
             withCors(res);

@@ -143,9 +143,9 @@ export function startApiServer(ctx: ApiServerContext): void {
             // Each handler returns true if it handled the request
 
             if (await handleLifecycleRoutes(req.method, url.pathname, req, res, ctx)) return;
-            if (await handleStrategyRoutes(req.method, url.pathname, req, res, ctx)) return;
-            if (await handleMarketRoutes(req.method, url.pathname, req, res, ctx)) return;
-            if (await handleStatusRoutes(req.method, url.pathname, req, res, ctx)) return;
+            if (await handleStrategyRoutes(req.method, url.pathname, req, res, ctx, url)) return;
+            if (await handleMarketRoutes(req.method, url.pathname, req, res, ctx, url)) return;
+            if (await handleStatusRoutes(req.method, url.pathname, req, res, ctx, url, () => requireApiKey(req, config.apiKey))) return;
 
             // V3 modular routes (/v3/*)
             const v3Handled = await handleV3Routes(

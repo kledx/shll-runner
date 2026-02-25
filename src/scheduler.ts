@@ -68,6 +68,12 @@ class Semaphore {
 
     constructor(private readonly limit: number) { }
 
+    /** Number of tasks waiting for a slot */
+    get pendingCount(): number { return this.queue.length; }
+
+    /** Number of tasks currently executing */
+    get activeCount(): number { return this.running; }
+
     async run<T>(fn: () => Promise<T>): Promise<T> {
         if (this.running >= this.limit) {
             await new Promise<void>((resolve) => this.queue.push(resolve));
@@ -466,11 +472,11 @@ export async function runSingleToken(
             const txResult = Array.isArray(result.payload)
                 ? await withRetry(
                     () => chain.executeBatchAction(tokenId, result.payload as ActionPayload[]),
-                    { maxAttempts: 2, baseDelayMs: 2000, label: `executeBatch(${tokenId})` },
+                    { maxAttempts: 2, baseDelayMs: 2000, label: `executeBatch(${tokenId})`, logger: log },
                 )
                 : await withRetry(
                     () => chain.executeAction(tokenId, result.payload as ActionPayload),
-                    { maxAttempts: 2, baseDelayMs: 2000, label: `execute(${tokenId})` },
+                    { maxAttempts: 2, baseDelayMs: 2000, label: `execute(${tokenId})`, logger: log },
                 );
 
             txTrace = appendTrace(

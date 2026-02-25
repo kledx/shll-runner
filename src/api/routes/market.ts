@@ -19,8 +19,10 @@ export async function handleMarketRoutes(
     req: IncomingMessage,
     res: ServerResponse,
     ctx: ApiServerContext,
+    url?: URL,
 ): Promise<boolean> {
     const { store, config, log } = ctx;
+    const parsedUrl = url ?? new URL(req.url ?? "/", "http://localhost");
 
     // ── Market Signal (single) ─────────────────────
     if (method === "POST" && pathname === "/market/signal") {
@@ -78,9 +80,8 @@ export async function handleMarketRoutes(
 
     // ── Market Signal (query) ──────────────────────
     if (method === "GET" && pathname === "/market/signal") {
-        const url = new URL(req.url ?? "/", "http://localhost");
-        const pair = url.searchParams.get("pair") ?? undefined;
-        const limitRaw = url.searchParams.get("limit") ?? undefined;
+        const pair = parsedUrl.searchParams.get("pair") ?? undefined;
+        const limitRaw = parsedUrl.searchParams.get("limit") ?? undefined;
         if (pair && !/^0x[a-fA-F0-9]{40}$/.test(pair)) {
             writeJson(res, 400, {
                 error: "pair must be a 0x-prefixed 20-byte address",
