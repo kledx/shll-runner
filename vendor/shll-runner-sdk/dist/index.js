@@ -6,6 +6,16 @@ import {
   toHex
 } from "viem";
 var DEFAULT_KNOWN_TYPES = ["llm_trader", "llm_defi", "hot_token", "simple_dca", "smart_dca"];
+// Versioned aliases: chain may store "llm_trader_v3" but Runner expects "llm_trader"
+var VERSION_ALIASES = {
+  "llm_trader_v3": "llm_trader",
+  "llm_defi_v3": "llm_defi",
+  "hot_token_v3": "hot_token",
+};
+var ALL_KNOWN_NAMES = [
+  ...DEFAULT_KNOWN_TYPES,
+  ...Object.keys(VERSION_ALIASES),
+];
 var MinimalAgentNFAAbi = [
   {
     "inputs": [{ "internalType": "uint256", "name": "tokenId", "type": "uint256" }],
@@ -138,9 +148,12 @@ var ChainReader = class {
     this.publicClient = createPublicClient({
       transport
     });
-    const allTypes = [...DEFAULT_KNOWN_TYPES, ...config.customAgentTypes ?? []];
+    const allTypes = [...ALL_KNOWN_NAMES, ...config.customAgentTypes ?? []];
     this.agentTypeMap = Object.fromEntries(
-      allTypes.map((t) => [keccak256(toHex(t)), t])
+      allTypes.map((t) => {
+        const canonical = VERSION_ALIASES[t] ?? t;
+        return [keccak256(toHex(t)), canonical];
+      })
     );
   }
   /**
