@@ -331,12 +331,25 @@ export async function runSingleToken(
             });
 
             // P-2026-018: Done signal — clear goal, enter standby (keep autopilot active)
+            // P-2026-040: Guard against premature done when agent has active goals.
+            // LLM may mistakenly set done=true on conversational responses while
+            // persistent goals (e.g. price monitoring) are still active.
             if (result.done) {
-                await store.clearTradingGoal(tokenId);
-                agentManager.stopAgent(tokenId);
-                log.info(
-                    `[V3][${tokenId.toString()}] Done — tradingGoal cleared, agent standby`,
-                );
+                const activeGoals = agent.memory.getActiveGoals
+                    ? await agent.memory.getActiveGoals()
+                    : [];
+                if (activeGoals.length > 0) {
+                    log.warn(
+                        `[V3][${tokenId.toString()}] LLM said done=true but ${activeGoals.length} active goal(s) remain — overriding to done=false`,
+                    );
+                    // Don't clear — let agent continue monitoring
+                } else {
+                    await store.clearTradingGoal(tokenId);
+                    agentManager.stopAgent(tokenId);
+                    log.info(
+                        `[V3][${tokenId.toString()}] Done — tradingGoal cleared, agent standby`,
+                    );
+                }
                 return true;
             }
         }
@@ -570,7 +583,21 @@ export async function runSingleToken(
         const ONE_SHOT_ACTIONS = ["swap", "wrap"];
         const isOneShot = ONE_SHOT_ACTIONS.includes(result.action);
         // Force done for one-shot TX actions ONLY IF LLM did not explicitly return done: false
-        const shouldDone = result.done !== false && (result.done === true || (result.acted && isOneShot));
+        let shouldDone = result.done !== false && (result.done === true || (result.acted && isOneShot));
+
+        // P-2026-040: Active goal guard — don't auto-complete if goals remain
+        if (shouldDone) {
+            const activeGoals = agent.memory.getActiveGoals
+                ? await agent.memory.getActiveGoals()
+                : [];
+            if (activeGoals.length > 0 && !result.done) {
+                // One-shot auto-done blocked by active goals (e.g. swap inside a DCA workflow)
+                log.warn(
+                    `[V3][${tokenId.toString()}] Auto-done blocked: ${activeGoals.length} active goal(s) remain`,
+                );
+                shouldDone = false;
+            }
+        }
 
         if (shouldDone) {
             await store.clearTradingGoal(tokenId);
