@@ -119,7 +119,8 @@ export class PgMemory implements IMemory {
                     timestamp AS created_at
              FROM agent_memory
              WHERE token_id = $1 AND type = 'goal' AND result IS NULL
-             ORDER BY timestamp ASC`,
+             ORDER BY timestamp ASC
+             LIMIT 10`,
             [this.tokenId.toString()],
         );
 

@@ -65,6 +65,20 @@ export function createSwapQuoteAction(publicClient: PublicClient): IAction {
                 ? WBNB_ADDRESS
                 : normalizeKnownAddressForChain(tokenOutRaw);
 
+            // Same-token check: e.g. WBNB→BNB both normalize to WBNB
+            if (tokenIn.toLowerCase() === tokenOut.toLowerCase()) {
+                return {
+                    success: true,
+                    data: {
+                        amountIn: amountIn.toString(),
+                        expectedOutput: amountIn.toString(),
+                        path: [tokenIn.toLowerCase()],
+                        hops: 0,
+                        note: "Input and output resolve to the same token — no swap needed.",
+                    },
+                };
+            }
+
             // Build path (add WBNB bridge if needed)
             let path: Address[];
             if (
