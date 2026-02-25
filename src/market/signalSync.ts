@@ -4,7 +4,7 @@
  * Extracted from index.ts. Runs as a background loop.
  */
 
-import type { RunnerStore } from "../store.js";
+import type { RunnerStore } from "../store/index.js";
 import type { createLogger } from "../logger.js";
 import {
     normalizeMarketSignalInput,

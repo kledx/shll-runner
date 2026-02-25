@@ -34,6 +34,11 @@ export interface Decision {
     blocked?: boolean;
     /** Reason why the agent is blocked (user-facing) */
     blockReason?: string;
+    /** LLM token usage statistics */
+    usage?: {
+        promptTokens: number;
+        completionTokens: number;
+    };
 }
 
 // ═══════════════════════════════════════════════════════

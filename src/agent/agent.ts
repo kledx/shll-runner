@@ -67,4 +67,7 @@ export interface LLMConfig {
     apiKey?: string;
     /** User instruction — used for intent classification (tool gating) */
     tradingGoal?: string;
+    /** Fallback model configuration */
+    fallbackProvider?: string;
+    fallbackModel?: string;
 }

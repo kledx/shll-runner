@@ -7,17 +7,28 @@
 
 import { keccak256, stringToHex } from "viem";
 import type { Logger } from "./logger.js";
-import type { RunnerStore } from "./store.js";
+import type { RunnerStore } from "./store/index.js";
 import type { ChainServices } from "./chain.js";
 import type { ExecutionTraceEntry } from "./types.js";
+import type { ActionPayload } from "./actions/interface.js";
 import { AgentManager } from "./agent/manager.js";
 import { getBlueprint } from "./agent/factory.js";
 import { runAgentCycle, recordExecution } from "./agent/runtime.js";
 import { sanitizeForUser, extractErrorMessage } from "./errors.js";
+import { withRetry } from "./errors/RunnerError.js";
 import {
     classifyFailureFromBlockedReason,
     classifyFailureFromError,
 } from "./runFailure.js";
+import {
+    metrics,
+    METRIC_LOOP_TICKS,
+    METRIC_CYCLES_TOTAL,
+    METRIC_TX_SUCCESS,
+    METRIC_TX_FAILURE,
+    METRIC_BLOCKED,
+    METRIC_SCHEDULABLE_TOKENS,
+} from "./metrics.js";
 
 // ═══════════════════════════════════════════════════════
 //                  Config Interface
@@ -47,13 +58,39 @@ export interface SchedulerContext {
 }
 
 // ═══════════════════════════════════════════════════════
+//                     Semaphore
+// ═══════════════════════════════════════════════════════
+
+/** Lightweight concurrency limiter — no external dependencies */
+class Semaphore {
+    private running = 0;
+    private queue: (() => void)[] = [];
+
+    constructor(private readonly limit: number) { }
+
+    async run<T>(fn: () => Promise<T>): Promise<T> {
+        if (this.running >= this.limit) {
+            await new Promise<void>((resolve) => this.queue.push(resolve));
+        }
+        this.running++;
+        try {
+            return await fn();
+        } finally {
+            this.running--;
+            this.queue.shift()?.();
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════
 //                     State
 // ═══════════════════════════════════════════════════════
 
 let lastLoopAt = 0;
 
 // Per-token consecutive blocked counter — auto-pause after MAX_BLOCKED_RETRIES
-const MAX_BLOCKED_RETRIES = 3;
+const MAX_BLOCKED_RETRIES = 5;
+const MAX_BACKOFF_MS = 10 * 60 * 1000; // 10 minutes
 const blockedCounts = new Map<string, number>();
 
 export function getLastLoopAt(): number {
@@ -207,6 +244,7 @@ export async function runSingleToken(
         if (!agent) return false;
 
         // Run one cognitive cycle
+        metrics.inc(METRIC_CYCLES_TOTAL);
         const result = await runAgentCycle(agent, {
             shadowCompare: shadowMode,
             minActionConfidence: config.llmMinActionConfidence,
@@ -269,8 +307,8 @@ export async function runSingleToken(
         }
 
         // Blocked backoff: if agent is blocked (prerequisites not met), back off
-        // Default 65s = slightly above on-chain cooldown (60s) to avoid wasted retries
-        const BLOCKED_BACKOFF_MS = parseInt(process.env.BLOCKED_BACKOFF_MS ?? "65000", 10);
+        // Exponential backoff: base * 2^(count-1), capped at MAX_BACKOFF_MS
+        const BASE_BACKOFF_MS = parseInt(process.env.BLOCKED_BACKOFF_MS ?? "65000", 10);
         if (result.blocked) {
             const key = tokenId.toString();
             const count = (blockedCounts.get(key) ?? 0) + 1;
@@ -308,12 +346,13 @@ export async function runSingleToken(
                 return true;
             }
 
-            // t6: Dynamic backoff for cooldown blocks — read actual cooldownSeconds from chain
-            let backoffMs = BLOCKED_BACKOFF_MS;
+            // Exponential backoff: 65s, 130s, 260s, 520s... capped at MAX_BACKOFF_MS
+            let backoffMs = Math.min(BASE_BACKOFF_MS * Math.pow(2, count - 1), MAX_BACKOFF_MS);
             const isCooldownBlock =
                 result.errorCode === "BUSINESS_POLICY_COOLDOWN" ||
                 (result.blockReason?.toLowerCase().includes("cooldown") ?? false);
 
+            // t6: Dynamic backoff for cooldown blocks — read actual cooldownSeconds from chain
             if (isCooldownBlock) {
                 try {
                     const chainCd = await chain.readCooldownSeconds(tokenId);
@@ -325,14 +364,14 @@ export async function runSingleToken(
                         );
                     }
                 } catch {
-                    // Chain read failed — fall back to default
+                    // Chain read failed — fall back to exponential default
                 }
             }
 
             const nextCheckAt = new Date(Date.now() + backoffMs);
             await store.updateNextCheckAt(tokenId, nextCheckAt);
             log.info(
-                `[V3][${tokenId.toString()}] Blocked (${count}/${MAX_BLOCKED_RETRIES}) — backoff ${backoffMs / 1000}s: ${result.blockReason ?? "unknown"}`,
+                `[V3][${tokenId.toString()}] Blocked (${count}/${MAX_BLOCKED_RETRIES}) — backoff ${Math.round(backoffMs / 1000)}s (exponential): ${result.blockReason ?? "unknown"}`,
             );
             return true;
         }
@@ -423,9 +462,16 @@ export async function runSingleToken(
             );
 
             // Dispatch: batch payloads → executeBatchAction, single → executeAction
+            // Wrapped with withRetry for transient RPC/network failures
             const txResult = Array.isArray(result.payload)
-                ? await chain.executeBatchAction(tokenId, result.payload)
-                : await chain.executeAction(tokenId, result.payload);
+                ? await withRetry(
+                    () => chain.executeBatchAction(tokenId, result.payload as ActionPayload[]),
+                    { maxAttempts: 2, baseDelayMs: 2000, label: `executeBatch(${tokenId})` },
+                )
+                : await withRetry(
+                    () => chain.executeAction(tokenId, result.payload as ActionPayload),
+                    { maxAttempts: 2, baseDelayMs: 2000, label: `execute(${tokenId})` },
+                );
 
             txTrace = appendTrace(
                 txTrace,
@@ -441,6 +487,7 @@ export async function runSingleToken(
             log.info(
                 `[V3][${tokenId.toString()}] TX confirmed block=${txResult.receiptBlock} status=${txResult.receiptStatus}${Array.isArray(result.payload) ? ` (batch=${result.payload.length})` : ""}`,
             );
+            metrics.inc(METRIC_TX_SUCCESS);
 
             // Record execution in agent memory
             await recordExecution(
@@ -507,6 +554,7 @@ export async function runSingleToken(
             `[V3][${tokenId.toString()}] error:`,
             rawMessage,
         );
+        metrics.inc(METRIC_TX_FAILURE);
 
         // Record failure in agent memory if agent exists
         const agent = agentManager.getAgent(tokenId);
@@ -559,7 +607,7 @@ export async function runSingleToken(
             const count = (blockedCounts.get(key) ?? 0) + 1;
             blockedCounts.set(key, count);
 
-            const BLOCKED_BACKOFF_MS = parseInt(process.env.BLOCKED_BACKOFF_MS ?? "65000", 10);
+            const BASE_BACKOFF_MS = parseInt(process.env.BLOCKED_BACKOFF_MS ?? "65000", 10);
             if (count >= MAX_BLOCKED_RETRIES) {
                 await store.clearTradingGoal(tokenId);
                 agentManager.stopAgent(tokenId);
@@ -570,10 +618,12 @@ export async function runSingleToken(
                 return true;
             }
 
-            const nextCheckAt = new Date(Date.now() + BLOCKED_BACKOFF_MS);
+            // Exponential backoff for business failures too
+            const backoffMs = Math.min(BASE_BACKOFF_MS * Math.pow(2, count - 1), MAX_BACKOFF_MS);
+            const nextCheckAt = new Date(Date.now() + backoffMs);
             await store.updateNextCheckAt(tokenId, nextCheckAt);
             log.info(
-                `[V3][${key}] Business failure (${count}/${MAX_BLOCKED_RETRIES}), backoff ${BLOCKED_BACKOFF_MS / 1000}s`,
+                `[V3][${key}] Business failure (${count}/${MAX_BLOCKED_RETRIES}), backoff ${Math.round(backoffMs / 1000)}s (exponential)`,
             );
             return true;
         }
@@ -604,21 +654,30 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
 
     let consecutiveErrors = 0;
 
+    const concurrency = parseInt(process.env.SCHEDULER_CONCURRENCY ?? "3", 10);
+    const semaphore = new Semaphore(concurrency);
+    log.info(`Scheduler concurrency: ${concurrency}`);
+
     while (true) {
         let loopSleepMs = config.pollIntervalMs;
         try {
             lastLoopAt = Date.now();
+            metrics.inc(METRIC_LOOP_TICKS);
 
             // V3: token discovery from token_strategies JOIN autopilots
+            // Ordered by next_check_at ASC — most urgent tokens dispatched first
             const schedulableTokenIds = await store.listSchedulableTokenIds();
+            metrics.set(METRIC_SCHEDULABLE_TOKENS, schedulableTokenIds.length);
 
             if (schedulableTokenIds.length === 0) {
                 log.info("[Tick] idle — no schedulable tokens");
             }
 
-            for (const tokenId of schedulableTokenIds) {
-                await runSingleToken(tokenId, ctx);
-            }
+            // Dispatch tokens in parallel, limited by semaphore
+            const tasks = schedulableTokenIds.map((tokenId) =>
+                semaphore.run(() => runSingleToken(tokenId, ctx)),
+            );
+            await Promise.allSettled(tasks);
 
             consecutiveErrors = 0;
             loopSleepMs = await computeAdaptiveLoopSleepMs(store, config.pollIntervalMs);

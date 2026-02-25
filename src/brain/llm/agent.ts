@@ -51,32 +51,38 @@ const DecisionSchema = z.object({
 
 export class LLMBrain implements IBrain {
     private model: LanguageModelV3;
+    private fallbackModel?: LanguageModelV3;
 
     constructor(
         private config: LLMConfig,
         _provider?: unknown, // kept for backward compat signature
     ) {
-        const baseURL = process.env.LLM_BASE_URL || this.resolveBaseURL(config.provider);
-        const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || config.apiKey || "";
-        const modelId = process.env.LLM_MODEL || config.model;
+        this.model = this.createModel(config.provider, config.model, config.endpoint, config.apiKey);
 
-        // Use dedicated @ai-sdk/deepseek provider for DeepSeek models
-        // (handles tool calling format correctly)
+        if (config.fallbackProvider && config.fallbackModel) {
+            this.fallbackModel = this.createModel(
+                config.fallbackProvider,
+                config.fallbackModel,
+                undefined,
+                undefined
+            );
+        }
+    }
+
+    private createModel(providerStr: string, modelId: string, customEndpoint?: string, customApiKey?: string): LanguageModelV3 {
+        const baseURL = customEndpoint || process.env.LLM_BASE_URL || this.resolveBaseURL(providerStr);
+        const apiKey = customApiKey || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "";
+
         const isDeepSeek = baseURL.includes("deepseek.com") ||
-            config.provider === "deepseek" ||
+            providerStr === "deepseek" ||
             modelId.includes("deepseek");
 
         if (isDeepSeek) {
             const ds = createDeepSeek({ baseURL, apiKey });
-            this.model = ds(modelId) as unknown as LanguageModelV3;
+            return ds(modelId) as unknown as LanguageModelV3;
         } else {
-            const openai = createOpenAI({
-                baseURL,
-                apiKey,
-                name: config.provider || "openai",
-            });
-            // Use .chat() to force Chat Completions API (not Responses API)
-            this.model = openai.chat(modelId) as unknown as LanguageModelV3;
+            const openai = createOpenAI({ baseURL, apiKey, name: providerStr || "openai" });
+            return openai.chat(modelId) as unknown as LanguageModelV3;
         }
     }
 
@@ -95,9 +101,29 @@ export class LLMBrain implements IBrain {
 
         console.log(`  [LLM] goal="${(this.config.tradingGoal ?? "").slice(0, 60)}" maxSteps=${maxSteps}`);
 
+        let decision = await this.executeTurn(this.model, systemPrompt, userPrompt, aiTools, toolChoice, maxSteps, memories);
+
+        if (decision.action === "wait" && decision.confidence === 0 && this.fallbackModel) {
+            console.log(`  [LLM Fallback] Primary model failed, retrying with fallback model...`);
+            decision = await this.executeTurn(this.fallbackModel, systemPrompt, userPrompt, aiTools, toolChoice, maxSteps, memories);
+        }
+
+        return decision;
+    }
+
+    private async executeTurn(
+        activeModel: LanguageModelV3,
+        systemPrompt: string,
+        userPrompt: string,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        aiTools: any,
+        toolChoice: "auto" | "none" | "required",
+        maxSteps: number,
+        memories: MemoryEntry[]
+    ): Promise<Decision> {
         try {
             const result = await generateText({
-                model: this.model,
+                model: activeModel,
                 system: systemPrompt,
                 prompt: userPrompt,
                 tools: aiTools,
@@ -115,13 +141,21 @@ export class LLMBrain implements IBrain {
                 },
             });
 
-            // Log step count
-            console.log(`  [LLM] ${result.steps.length} step(s), finish: ${result.finishReason}`);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const rawUsage = result.usage as any;
+            const usage = rawUsage ? {
+                promptTokens: typeof rawUsage.promptTokens === 'number' ? rawUsage.promptTokens : (rawUsage.promptTokenCount || 0),
+                completionTokens: typeof rawUsage.completionTokens === 'number' ? rawUsage.completionTokens : (rawUsage.completionTokenCount || 0),
+            } : undefined;
+
+            // Log step count and token usage
+            console.log(`  [LLM] ${result.steps.length} step(s), finish: ${result.finishReason}, tokens: ${usage?.promptTokens || 0} in / ${usage?.completionTokens || 0} out`);
 
             // Parse the final text response into a Decision
             if (result.text) {
                 console.log(`  [LLM Raw] ${result.text.slice(0, 200)}`);
                 const parsed = parseDecision(result.text);
+                parsed.usage = usage;
                 return this.applyCadenceFallback(parsed, memories);
             }
 
@@ -140,6 +174,7 @@ export class LLMBrain implements IBrain {
                     reasoning: toolData,
                     confidence: 0.6,
                     done: true,
+                    usage,
                 };
             }
             const fallback: Decision = {
@@ -147,6 +182,7 @@ export class LLMBrain implements IBrain {
                 params: {},
                 reasoning: "Agent completed processing — no additional output",
                 confidence: 0,
+                usage,
             };
             return this.applyCadenceFallback(fallback, memories);
         } catch (error) {
@@ -158,7 +194,7 @@ export class LLMBrain implements IBrain {
                 params: {},
                 reasoning: `System error (details logged)`,
                 message: userMessage,
-                confidence: 0,
+                confidence: 0, // 0 confidence used as trigger for fallback in caller
             };
             return this.applyCadenceFallback(fallback, memories);
         }
@@ -259,7 +295,7 @@ export class LLMBrain implements IBrain {
         };
     }
 
-    /** Build system prompt — tools are provided via API, not listed in prompt */
+    /** Build system prompt — structured and compressed */
     private buildSystemPrompt(actions: IAction[]): string {
         const writeActions = actions.filter(a => !a.readonly).map(a => a.name);
         const chainId = getChainIdFromEnv();
@@ -268,127 +304,33 @@ export class LLMBrain implements IBrain {
         const router = process.env.ROUTER_ADDRESS || chainDefaults.router;
         const usdt = chainDefaults.usdt;
         const busd = chainDefaults.busd;
-        const parts: string[] = [
+
+        return [
             this.config.systemPrompt,
             "",
-            "## BSC Infrastructure",
-            `- Chain ID: ${chainId}`,
-            `- PancakeSwap V2 Router: ${router}`,
-            `- WBNB: ${wbnb}`,
-            `- Native BNB (for tokenIn): 0x0000000000000000000000000000000000000000`,
-            `- USDT (BSC): ${usdt}`,
-            `- BUSD (BSC): ${busd}`,
+            "## Environment",
+            `- Chain ID: ${chainId} | Router: ${router}`,
+            `- WBNB: ${wbnb} | Native BNB: 0x0000000000000000000000000000000000000000`,
+            `- USDT: ${usdt} | BUSD: ${busd}`,
             "",
-            "## Token Selection Rules",
-            "- WBNB is Wrapped BNB — functionally equivalent to BNB for ALL swaps. When vault has WBNB, use it directly as tokenIn (NO need to unwrap).",
-            "- When swapping TO BNB (tokenOut=0x0000...0000): vault receives WBNB (smart contract safety). Tell user: 'Swapped to WBNB (equivalent to BNB, usable for all trades).'",
-            "- Token input priority: prefer ERC20 tokens (WBNB > USDT > native BNB) as tokenIn. Native BNB is only needed if vault has no WBNB.",
-            "- Approve is handled automatically by the runtime — you do NOT need to output action='approve' separately. Just output action='swap' directly.",
+            "## Core Rules",
+            "1. DECISIONS: Output JSON only: {action, params, reasoning, message, confidence, done?, nextCheckMs?, blocked?, blockReason?}",
+            `   Valid actions: ${writeActions.join(", ")}, or 'wait'`,
+            "2. TOOL USE: Use get_market_data prior to trading. Use get_portfolio to check vault balances. Do NOT call tools for conversational queries.",
+            "3. SWAP PARAMS: Ensure action='swap' has {router, tokenIn, tokenOut, amountIn, minOut}. minOut MUST be >0 (e.g. expected * 0.95).",
+            "4. AUTOMATED APPROVALS: 'approve' is handled automatically. NEVER output action='approve', just output 'swap'.",
+            "5. ROUTING OPTS: Minimize hops. When selling an ERC20, swap to WBNB (not USDT) unless user requests stablecoins.",
+            "6. SCHEDULING: Set done=true for one-shot requests. Set done=false with nextCheckMs for recurring/monitoring tasks.",
+            "7. MESSAGING: Reply in the SAME language as the user. Use a conversational tone.",
             "",
-            "## Swap Routing Optimization",
-            "- When SELLING an ERC20 token: set tokenOut=WBNB (2-hop path: Token→WBNB). Do NOT route through USDT/BUSD unless the user EXPLICITLY asks for stablecoins.",
-            "- Reason: most BSC tokens have a direct pair with WBNB. Routing Token→WBNB→USDT adds an extra hop, costing more gas and incurring more slippage.",
-            "- When BUYING an ERC20 token: set tokenIn=WBNB if vault has WBNB balance, or tokenIn=USDT/BUSD if that's what the vault holds.",
-            "- Rule of thumb: minimize the number of hops. Direct pairs (2 hops) are always preferred over indirect routes (3+ hops).",
-            "",
-            "## Instructions",
-            "- NEVER mix BSC mainnet and testnet addresses in the same action.",
-            "- ASSESS the user's intent before calling tools. Ask yourself: does this request need real-time on-chain data?",
-            "  1. NEEDS ON-CHAIN DATA → call tools first:",
-            "     - Trade requests (swap, buy, sell, convert) → get_portfolio + get_market_data",
-            "     - Balance / holdings queries → get_portfolio only",
-            "     - Price / market queries → get_market_data only",
-            "  2. DOES NOT NEED ON-CHAIN DATA → respond directly, NO tool calls, set done: true:",
-            "     - Greetings, small talk, test messages",
-            "     - Questions about the platform (what is SHLL, how to deposit, what can you do)",
-            "     - Strategy explanations, safety policy questions",
-            "     - General crypto / DeFi knowledge questions",
-            "     - EXCEPTION: recurring chat tasks (e.g. 'for 1 minute send hi every 5 seconds') are ongoing jobs.",
-            "       Use action='wait', done=false, nextCheckMs=<interval>, and message as the exact text to repeat.",
-            "     - Error troubleshooting (use SHLL Platform Context below)",
-            "- Use get_market_data to check token prices BEFORE making trade decisions.",
-            "- Use get_portfolio to check your current vault holdings.",
-            "- THEN output your final decision as a single JSON object:",
-            '  { "action": "<name>", "params": { ... }, "reasoning": "<internal analysis>", "message": "<what you say to the user>", "confidence": 0.0-1.0 }',
-            "- Valid actions for final decision: " + writeActions.join(", ") + ", or 'wait'",
-            "- For swap: ALWAYS include router, tokenIn, tokenOut, amountIn, AND minOut (all in wei). Use the PancakeSwap V2 Router address above.",
-            "  IMPORTANT: minOut MUST be non-zero! Calculate it as: expectedOutput * (1 - slippage). Use 2-5% slippage tolerance.",
-            "- For wrap: ALWAYS include direction ('wrap' or 'unwrap') and amount (in wei). wrap = BNB to WBNB, unwrap = WBNB to BNB.",
-            "",
-            "## Swap Execution",
-            "- Approve is handled AUTOMATICALLY by the runtime. You do NOT need to call get_allowance or output action='approve'.",
-            "- For ANY swap (native BNB or ERC20): just output action='swap' with the correct params. The system handles approve + batch execution.",
-            "- For ERC20 swaps: the runtime checks allowance and auto-bundles approve+swap into a single transaction if needed.",
-            "- If swapping native BNB (tokenIn = 0x0000...0000), no approve is needed at all.",
-            "- After a successful swap, tell the user the result. Do NOT output a second action.",
-            "- Never exceed user safety limits.",
-            "- Prefer capital preservation over risky trades.",
-            "- `reasoning`: internal analysis for debugging (not shown to user). Keep concise.",
-            "- `message`: user-facing reply. Write in a friendly, conversational tone. Required for all responses. PLAIN TEXT ONLY — do NOT use markdown formatting (no **, *, #, ```, etc.).",
-            "  LANGUAGE RULE: ALWAYS reply in the SAME language as the user's message. If user writes in Chinese, reply in Chinese. If user writes in English, reply in English.",
-            "  Examples: 'I checked BNB price — it's at $312. No good entry yet, I'll keep watching.' or '已检查 BNB 价格 $312，还没到好的入场点，继续观察。'",
-            "- IMPORTANT: After tool calls, your FINAL response must be ONLY valid JSON. Do NOT call tools in your final response.",
-            "",
-            "## Blocked Signal",
-            "- Set `blocked: true` ONLY when you have CONCRETE EVIDENCE that the task cannot proceed:",
-            "  - For trades: Vault balance for the token you are SPENDING (tokenIn) is literally 0 → blocked: true",
-            "  - CRITICAL LOGIC: If the user wants to BUY a token (tokenOut), it is NORMAL for its balance to be 0! Do NOT block!",
-            "  - Native BNB balance is 0 (cannot pay gas) → blocked: true",
-            "- CRITICAL: Do NOT preemptively assume failure based on PAST errors in Recent History.",
-            "  - If the user says they FIXED something (e.g. '已添加白名单', 'I added the whitelist', '已解决'), ALWAYS retry the action immediately. Past errors are STALE after user fixes.",
-            "  - Policy errors (whitelist, spending limit, cooldown) are NOT your responsibility. ALWAYS attempt the action and let the guardrails decide.",
-            "  - NEVER refuse a trade because of 'Token not in whitelist' or similar policy errors. Just submit it — the system will block it if needed.",
-            "  - If you see `0xacfdb444` or `ExecutionFailed` in Recent History, it means a previous trade failed (often liquidity/path issue), not authorization.",
-            "  - DO NOT confuse `0xacfdb444` with `Unauthorized`.",
-            "  - If market data is missing / pairsFound=0 / liquidity is unclear, output `wait` and explain that trade cannot be safely executed now.",
-            "  - If you're unsure → attempt the action. The guardrails will block it if there's a real problem.",
-            "- When blocked: set action='wait', done: false. The scheduler will back off automatically.",
-            "- Do NOT use blocked for: market conditions, token approvals, whitelist issues, or speculative failure reasons.",
-            "",
-            "## ABSOLUTE RULE — NEVER PREEMPTIVELY REFUSE A TRADE",
-            "- When the user asks to buy/sell/swap a token, you MUST output action='swap' with valid params.",
-            "- You do NOT know which tokens are on the whitelist. The guardrails system checks this AFTER you submit.",
-            "- If a [POLICY: handled by user] entry appears in Recent History, IGNORE it. The user handles policies via the UI.",
-            "- ANY response that says 'token is not in whitelist / 白名单', 'contact admin', or refuses a trade for policy reasons is WRONG.",
-            "- The ONLY reasons you may refuse to trade are: (1) vault balance for tokenIn is literally 0, (2) no gas (native BNB = 0), (3) token has no liquidity on DEX.",
-            "- If you mention 'whitelist' in your message for ANY reason other than 'I am submitting the trade', you have made an ERROR.",
-            "",
-            "## SHLL Platform Context",
-            "You are an AI Agent running on the SHLL platform. When encountering issues, guide the user:",
-            "- If vault balance is 0 or too low for the token you need to SPEND:",
-            '  → Set blocked: true, blockReason: "Your vault has insufficient balance for the token you want to spend. Please send it to your Agent Account address shown at the top of the Console page."',
-            "- If a trade fails due to gas / insufficient BNB:",
-            '  → Set blocked: true, blockReason: "Your Agent needs BNB for gas fees. Send a small amount of BNB (e.g. 0.01 BNB) to the Agent Account address."',
-            "- If user asks how to deposit or fund the agent:",
-            '  → Tell user: "Go to the Console page → Vault section. Your Agent Account address is shown at the top. Send tokens directly to that address from your wallet."',
-            "- If user asks what you are or what SHLL is:",
-            '  → Tell user: "I am an on-chain AI trading agent on the SHLL platform. I can execute trades, monitor markets, and manage your vault — all validated by on-chain safety rules (PolicyGuard)."',
-            "- IMPORTANT: You are NOT responsible for checking DEX whitelists, token permissions, or spending limits.",
-            "  The guardrails system does this automatically AFTER you submit an action.",
-            "  Your job is to ATTEMPT the action. If it violates a policy, the system will block it and tell the user.",
-            "  Do NOT preemptively set blocked: true for policy-related reasons. Just submit the action.",
-            "- If a trade fails with 'Unauthorized' or 'operator expired' error specifically from on-chain execution (shown as [ERROR: ...] in Recent History):",
-            '  → Set blocked: true, blockReason: "On-chain authorization may have expired. Go to Console → click Enable Autopilot to re-authorize."',
-            "- NEVER invent or fabricate error messages. Only reference errors that appear verbatim in [ERROR: ...] entries in Recent History.",
-            "",
-            "## Scheduling Control",
-            "- Set `done: true` when the user's request is FULLY SATISFIED and no further action is needed:",
-            "  - Information queries: 'check my portfolio', 'what is BNB price' → answer the question, then done: true",
-            "  - Single trades: 'swap 0.1 BNB to USDT' → execute, then done: true",
-            "  - Any request that does NOT require ongoing monitoring → done: true",
-            "- Set `done: false` (or omit) for tasks that require ONGOING monitoring or repeated checks:",
-            "  - Conditional orders: 'buy when BNB drops below $300' → wait + nextCheckMs",
-            "  - Recurring tasks: 'Buy 0.01 BNB automatically every hour' → wait + nextCheckMs",
-            "  - Active trading sessions: 'trade actively for the next hour' → wait + nextCheckMs",
-            "- When waiting, set `nextCheckMs` to suggest re-check interval:",
-            "  - Active trading: 60000 (1 min)",
-            "  - Casual monitoring: 300000 (5 min)",
-            "  - Low-priority: 3600000 (1 hour)",
-            "- IMPORTANT: Most user queries are one-shot. Default to done: true unless the task explicitly requires re-checking.",
-        ];
-        return parts.join("\n");
+            "## Handling Blocks & Errors",
+            "- DO NOT refuse trades for 'whitelist' or 'policy' reasons. The systemic guardrails handle this. Submit the trade anyway.",
+            "- Ignore [POLICY: handled by user] lines in history.",
+            "- Set blocked=true ONLY if: (a) Vault balance for tokenIn is exactly 0, or (b) Native BNB is 0 (no gas).",
+            "- If a trade fails due to gas, set blockReason prompting the user to send BNB to their Agent Account.",
+            "- If user asks about deposits, tell them to send tokens to the Agent Account (visible in Console -> Vault)."
+        ].join("\n");
     }
-
     /** Convert read-only IActions to Vercel AI SDK tools */
     private buildTools(
         actions: IAction[],
@@ -560,72 +502,3 @@ function normalizeDecision(parsed: Record<string, unknown>): Decision {
     };
 }
 
-type RecurringMessageIntent = {
-    intervalMs: number;
-    durationMs: number;
-    message: string;
-    doneMessage: string;
-    signature: string;
-};
-
-function parseRecurringMessageIntent(goal: string): RecurringMessageIntent | null {
-    const raw = goal.trim();
-    if (!raw) return null;
-
-    const intervalMs = parseIntervalMs(raw);
-    const durationMs = parseDurationMs(raw);
-    const message = parseRepeatedMessage(raw);
-
-    if (!intervalMs || !durationMs || !message) return null;
-    if (durationMs < intervalMs) return null;
-
-    const signature = `${intervalMs}:${durationMs}:${message.toLowerCase()}`;
-    return {
-        intervalMs: Math.max(5_000, intervalMs),
-        durationMs,
-        message,
-        doneMessage: `已完成：按要求每${Math.round(intervalMs / 1000)}秒发送“${message}”，持续${Math.round(durationMs / 1000)}秒。`,
-        signature,
-    };
-}
-
-function parseIntervalMs(text: string): number | null {
-    const zhSec = text.match(/每\s*(\d+)\s*秒/);
-    if (zhSec) return Number.parseInt(zhSec[1], 10) * 1000;
-    const zhMin = text.match(/每\s*(\d+)\s*分(?:钟)?/);
-    if (zhMin) return Number.parseInt(zhMin[1], 10) * 60_000;
-
-    const enSec = text.match(/every\s+(\d+)\s*seconds?/i);
-    if (enSec) return Number.parseInt(enSec[1], 10) * 1000;
-    const enMin = text.match(/every\s+(\d+)\s*minutes?/i);
-    if (enMin) return Number.parseInt(enMin[1], 10) * 60_000;
-    return null;
-}
-
-function parseDurationMs(text: string): number | null {
-    const zhMinA = text.match(/接下来\s*(\d+)\s*分(?:钟)?/);
-    if (zhMinA) return Number.parseInt(zhMinA[1], 10) * 60_000;
-    const zhMinB = text.match(/(?:持续|在)\s*(\d+)\s*分(?:钟)?(?:内)?/);
-    if (zhMinB) return Number.parseInt(zhMinB[1], 10) * 60_000;
-    const zhSec = text.match(/(?:持续|在)\s*(\d+)\s*秒(?:钟)?(?:内)?/);
-    if (zhSec) return Number.parseInt(zhSec[1], 10) * 1000;
-
-    const enMin = text.match(/for\s+(\d+)\s*minutes?/i);
-    if (enMin) return Number.parseInt(enMin[1], 10) * 60_000;
-    const enSec = text.match(/for\s+(\d+)\s*seconds?/i);
-    if (enSec) return Number.parseInt(enSec[1], 10) * 1000;
-    return null;
-}
-
-function parseRepeatedMessage(text: string): string | null {
-    const quoted = text.match(/[“"']([^”"']{1,120})[”"']/);
-    if (quoted) return quoted[1].trim();
-
-    const zh = text.match(/(?:发送|说|回复)(?:一条|一句|一次)?\s+([^\s，。,！!？?]{1,80})/);
-    if (zh) return zh[1].trim();
-
-    const en = text.match(/send\s+(?:a\s+message\s+)?([a-z0-9 _-]{1,80})/i);
-    if (en) return en[1].trim();
-
-    return null;
-}

@@ -1,43 +1,30 @@
 /**
  * API Server — HTTP control plane for the SHLL Agent Runner.
  *
- * Provides REST endpoints for:
- * - Agent lifecycle (enable/disable)
- * - Strategy management (upsert/query)
- * - Market signal ingestion
- * - Agent dashboard and activity
- * - Health check
- * - V3 modular routes (safety, admin)
+ * Thin dispatcher: delegates to domain-specific route handlers.
+ * All route logic lives in api/routes/ modules.
+ *
+ * Route domains:
+ *   - lifecycle.ts  → /enable, /disable
+ *   - strategy.ts   → /strategy/*, /strategy/clear-goal
+ *   - market.ts     → /market/signal, /market/signal/batch, /market/signal/sync
+ *   - status.ts     → /status, /health, /metrics, /agent/*, /shadow/*, /autopilots
+ *   - router.ts     → /v3/* (safety, admin, performance, safety-metrics)
  */
 
 import { createServer } from "node:http";
-import type { Hex } from "viem";
 import { ZodError } from "zod";
 import type { Logger } from "../logger.js";
-import type { RunnerStore } from "../store.js";
+import type { RunnerStore } from "../store/index.js";
 import type { ChainServices } from "../chain.js";
 import type { AgentManager } from "../agent/manager.js";
-import { getUrl, parseBody, withCors, writeJson } from "../http.js";
-import {
-    normalizePermit,
-    parseDisablePayload,
-    parseEnablePayload,
-    parseMarketSignalBatchUpsertPayload,
-    parseMarketSignalSyncRequestPayload,
-    parseMarketSignalUpsertPayload,
-    parseStrategyQuery,
-    parseStrategyUpsertPayload,
-    parseShadowMetricsQuery,
-    parseStatusQuery,
-} from "../validation.js";
+import { getUrl, withCors, writeJson } from "../http.js";
 import { handleV3Routes } from "./router.js";
-import { normalizeMarketSignalInput } from "../market/helpers.js";
-import {
-    syncMarketSignalsFromSourceOnce,
-    getSignalSyncState,
-    type SignalSyncConfig,
-} from "../market/signalSync.js";
-import { getLastLoopAt, runSingleToken, resetBlockedCount, type SchedulerContext } from "../scheduler.js";
+import { handleLifecycleRoutes } from "./routes/lifecycle.js";
+import { handleStrategyRoutes } from "./routes/strategy.js";
+import { handleMarketRoutes } from "./routes/market.js";
+import { handleStatusRoutes } from "./routes/status.js";
+import type { SchedulerContext } from "../scheduler.js";
 
 // ═══════════════════════════════════════════════════════
 //                  Server Config
@@ -69,7 +56,6 @@ export interface ApiServerContext {
     store: RunnerStore;
     chain: ChainServices;
     config: ApiServerConfig;
-    // allowedTokenIdSet removed — V3 uses permit signatures for auth
     agentManager: AgentManager;
     log: Logger;
     /** Optional: scheduler context for immediate agent trigger after upsert */
@@ -80,8 +66,6 @@ export interface ApiServerContext {
 //                  Helpers
 // ═══════════════════════════════════════════════════════
 
-
-
 function requireApiKey(
     req: import("node:http").IncomingMessage,
     apiKey: string,
@@ -91,17 +75,50 @@ function requireApiKey(
     return provided === apiKey;
 }
 
+/** Mutating endpoints that require API key auth */
+const AUTH_REQUIRED_PATHS = new Set([
+    "/enable",
+    "/disable",
+    "/strategy/upsert",
+    "/strategy/clear-goal",
+    "/market/signal",
+    "/market/signal/batch",
+    "/market/signal/sync",
+]);
+
+// ═══════════════════════════════════════════════════════
+//                  Unified Error Response
+// ═══════════════════════════════════════════════════════
+
+interface ErrorResponse {
+    error: string;
+    code?: string;
+    details?: unknown;
+}
+
+function writeError(
+    res: import("node:http").ServerResponse,
+    statusCode: number,
+    error: string,
+    opts?: { code?: string; details?: unknown },
+): void {
+    const body: ErrorResponse = { error };
+    if (opts?.code) body.code = opts.code;
+    if (opts?.details) body.details = opts.details;
+    writeJson(res, statusCode, body);
+}
+
 // ═══════════════════════════════════════════════════════
 //                  Server
 // ═══════════════════════════════════════════════════════
 
 export function startApiServer(ctx: ApiServerContext): void {
-    const { store, chain, config, agentManager, log } = ctx;
+    const { config, log } = ctx;
 
     const server = createServer(async (req, res) => {
         try {
             if (!req.url || !req.method) {
-                writeJson(res, 400, { error: "invalid request" });
+                writeError(res, 400, "invalid request");
                 return;
             }
 
@@ -115,535 +132,57 @@ export function startApiServer(ctx: ApiServerContext): void {
             }
 
             // Auth check for mutating endpoints
-            if (
-                req.method === "POST" &&
-                (url.pathname === "/enable" ||
-                    url.pathname === "/disable" ||
-                    url.pathname === "/strategy/upsert" ||
-                    url.pathname === "/strategy/clear-goal" ||
-                    url.pathname === "/market/signal" ||
-                    url.pathname === "/market/signal/batch" ||
-                    url.pathname === "/market/signal/sync")
-            ) {
+            if (req.method === "POST" && AUTH_REQUIRED_PATHS.has(url.pathname)) {
                 if (!requireApiKey(req, config.apiKey)) {
-                    writeJson(res, 401, { error: "unauthorized" });
+                    writeError(res, 401, "unauthorized", { code: "AUTH_REQUIRED" });
                     return;
                 }
             }
 
-            // ── Enable ─────────────────────────────────────
-            if (req.method === "POST" && url.pathname === "/enable") {
-                const body = await parseBody(req);
-                const payload = parseEnablePayload(body);
-                const permit = normalizePermit(payload.permit);
+            // ── Route dispatch ──────────────────────────────
+            // Each handler returns true if it handled the request
 
-                if (
-                    payload.chainId != null &&
-                    payload.chainId !== config.chainId
-                ) {
-                    writeJson(res, 400, {
-                        error: `chainId mismatch: expected ${config.chainId}`,
-                    });
-                    return;
-                }
+            if (await handleLifecycleRoutes(req.method, url.pathname, req, res, ctx)) return;
+            if (await handleStrategyRoutes(req.method, url.pathname, req, res, ctx)) return;
+            if (await handleMarketRoutes(req.method, url.pathname, req, res, ctx)) return;
+            if (await handleStatusRoutes(req.method, url.pathname, req, res, ctx)) return;
 
-                if (
-                    payload.nfaAddress != null &&
-                    payload.nfaAddress.toLowerCase() !==
-                    config.agentNfaAddress.toLowerCase()
-                ) {
-                    writeJson(res, 400, {
-                        error: `nfaAddress mismatch: expected ${config.agentNfaAddress}`,
-                    });
-                    return;
-                }
-
-
-
-                if (
-                    permit.operator.toLowerCase() !==
-                    chain.account.address.toLowerCase()
-                ) {
-                    writeJson(res, 400, {
-                        error: "permit.operator must equal runner operator address",
-                        expectedOperator: chain.account.address,
-                    });
-                    return;
-                }
-
-                const nowSec = BigInt(Math.floor(Date.now() / 1000));
-                if (permit.deadline < nowSec) {
-                    writeJson(res, 400, {
-                        error: "permit.deadline has expired",
-                    });
-                    return;
-                }
-
-                const result = await chain.enableOperatorWithPermit(
-                    permit,
-                    payload.sig as Hex,
-                    payload.waitForReceipt ?? true,
-                );
-
-                await store.upsertEnabled({
-                    tokenId: permit.tokenId,
-                    renter: permit.renter,
-                    operator: permit.operator,
-                    permitExpires: permit.expires,
-                    permitDeadline: permit.deadline,
-                    sig: payload.sig,
-                    txHash: result.hash,
-                });
-
-                log.info(
-                    `Permit applied: tokenId=${permit.tokenId.toString()} hash=${result.hash}`,
-                );
-                writeJson(res, 200, {
-                    ok: true,
-                    txHash: result.hash,
-                    receiptStatus: result.receiptStatus,
-                    receiptBlock: result.receiptBlock,
-                });
-                return;
-            }
-
-            // ── Strategy Upsert ────────────────────────────
-            if (req.method === "POST" && url.pathname === "/strategy/upsert") {
-                const body = await parseBody(req);
-                const payload = parseStrategyUpsertPayload(body);
-                if (!payload.strategyType) {
-                    writeJson(res, 400, {
-                        error: "strategyType is required",
-                    });
-                    return;
-                }
-                const record = await store.upsertStrategy({
-                    tokenId: BigInt(payload.tokenId),
-                    strategyType: payload.strategyType,
-                    target: payload.target ?? "",
-                    data: payload.data ?? "0x",
-                    value: BigInt(payload.value ?? 0),
-                    strategyParams: payload.strategyParams ?? {},
-                    source: "api",
-                    minIntervalMs: payload.minIntervalMs ?? 300_000,
-                    requirePositiveBalance:
-                        payload.requirePositiveBalance ?? true,
-                    maxFailures: payload.maxFailures ?? 5,
-                    enabled: payload.enabled ?? true,
-                });
-                log.info(
-                    `Strategy upserted: tokenId=${payload.tokenId} type=${payload.strategyType}`,
-                );
-
-                // Extract tradingGoal for immediate trigger check below
-                const goal = (payload.strategyParams as Record<string, unknown> | undefined)?.tradingGoal;
-
-                writeJson(res, 200, { ok: true, strategy: record });
-
-                // Trigger immediate agent cycle if tradingGoal was set, and always invalidate cache
-                if (ctx.schedulerCtx) {
-                    const tid = BigInt(payload.tokenId);
-
-                    // Stop old cached agent so runtime rebuilds with new strategy parameters
-                    ctx.schedulerCtx.agentManager.stopAgent(tid);
-
-                    if (goal) {
-                        // Reset blocked backoff state so the new instruction gets a fresh start
-                        resetBlockedCount(tid);
-
-                        log.info(`[API] Triggering immediate cycle for token ${tid.toString()} (blocked counter reset)`);
-                        void runSingleToken(tid, ctx.schedulerCtx, { skipCadenceCheck: true }).catch(
-                            (err) => log.error(`[API] Immediate trigger error for ${tid.toString()}:`, err instanceof Error ? err.message : err),
-                        );
-                    }
-                }
-                return;
-            }
-
-            // ── Strategy Clear Goal (P-2026-018) ──────────────
-            if (req.method === "POST" && url.pathname === "/strategy/clear-goal") {
-                const body = await parseBody(req);
-                const tokenId = BigInt((body as Record<string, string>).tokenId ?? "0");
-                if (!tokenId) {
-                    writeJson(res, 400, { error: "tokenId is required" });
-                    return;
-                }
-                await store.clearTradingGoal(tokenId);
-                agentManager.stopAgent(tokenId);
-                log.info(`[API] Cleared tradingGoal for token ${tokenId.toString()}`);
-                writeJson(res, 200, { ok: true, tokenId: tokenId.toString() });
-                return;
-            }
-
-            // ── Market Signal (single) ─────────────────────
-            if (req.method === "POST" && url.pathname === "/market/signal") {
-                const body = await parseBody(req);
-                const payload = parseMarketSignalUpsertPayload(body);
-                const normalized = normalizeMarketSignalInput(
-                    payload,
-                    "manual",
-                );
-                const record = await store.upsertMarketSignal({
-                    pair: normalized.pair,
-                    priceChangeBps: normalized.priceChangeBps,
-                    volume5m: normalized.volume5m,
-                    uniqueTraders5m: normalized.uniqueTraders5m,
-                    sampledAt: normalized.sampledAt,
-                    source: normalized.source,
-                });
-                writeJson(res, 200, { ok: true, signal: record });
-                return;
-            }
-
-            // ── Market Signal (batch) ──────────────────────
-            if (
-                req.method === "POST" &&
-                url.pathname === "/market/signal/batch"
-            ) {
-                const body = await parseBody(req);
-                const payload = parseMarketSignalBatchUpsertPayload(body);
-                const defaultSource = payload.source ?? "manual-batch";
-                const inputs = payload.items.map((item) =>
-                    normalizeMarketSignalInput(item, defaultSource),
-                );
-                const upserted = await store.upsertMarketSignals(inputs);
-                writeJson(res, 200, {
-                    ok: true,
-                    requestedCount: payload.items.length,
-                    upsertedCount: upserted,
-                });
-                return;
-            }
-
-            // ── Market Signal (sync trigger) ───────────────
-            if (
-                req.method === "POST" &&
-                url.pathname === "/market/signal/sync"
-            ) {
-                const body = await parseBody(req);
-                const payload =
-                    parseMarketSignalSyncRequestPayload(body);
-                const startedAt = Date.now();
-                const result = await syncMarketSignalsFromSourceOnce(
-                    {
-                        store,
-                        config,
-                        log,
-                    },
-                    { dryRun: payload.dryRun ?? false },
-                );
-                writeJson(res, 200, {
-                    ok: true,
-                    ...result,
-                    elapsedMs: Date.now() - startedAt,
-                });
-                return;
-            }
-
-            // ── Market Signal (query) ──────────────────────
-            if (req.method === "GET" && url.pathname === "/market/signal") {
-                const pair =
-                    url.searchParams.get("pair") ?? undefined;
-                const limitRaw =
-                    url.searchParams.get("limit") ?? undefined;
-                if (pair && !/^0x[a-fA-F0-9]{40}$/.test(pair)) {
-                    writeJson(res, 400, {
-                        error: "pair must be a 0x-prefixed 20-byte address",
-                    });
-                    return;
-                }
-
-                let limit = 100;
-                if (limitRaw != null) {
-                    const parsed = Number.parseInt(limitRaw, 10);
-                    if (
-                        !Number.isFinite(parsed) ||
-                        parsed <= 0 ||
-                        parsed > 1000
-                    ) {
-                        writeJson(res, 400, {
-                            error: "limit must be an integer between 1 and 1000",
-                        });
-                        return;
-                    }
-                    limit = parsed;
-                }
-
-                const items = await store.listMarketSignals(
-                    pair ? [pair] : undefined,
-                    limit,
-                );
-                writeJson(res, 200, {
-                    ok: true,
-                    count: items.length,
-                    items,
-                });
-                return;
-            }
-
-            // ── Disable ────────────────────────────────────
-            if (req.method === "POST" && url.pathname === "/disable") {
-                const body = await parseBody(req);
-                const payload = parseDisablePayload(body);
-                const tokenId =
-                    payload.tokenId != null
-                        ? BigInt(payload.tokenId)
-                        : config.tokenId;
-                const mode = payload.mode ?? "local";
-                const reason = payload.reason ?? "disabled by API";
-
-                let txHash: string | undefined;
-                if (mode === "onchain") {
-                    const result = await chain.clearOperator(
-                        tokenId,
-                        payload.waitForReceipt ?? true,
-                    );
-                    txHash = result.hash;
-                }
-
-                const record = await store.disable(
-                    tokenId,
-                    reason,
-                    txHash,
-                );
-                // Stop the in-memory agent instance so the scheduler won't re-run it
-                agentManager.stopAgent(tokenId);
-                await store.releaseAutopilotLock(tokenId);
-                log.info(`[API] Disabled token ${tokenId.toString()} — reason: ${reason}`);
-                writeJson(res, 200, {
-                    ok: true,
-                    tokenId: record.tokenId,
-                    mode,
-                    txHash,
-                });
-                return;
-            }
-
-            // ── Status (single token) ──────────────────────
-            if (req.method === "GET" && url.pathname === "/status") {
-                const query = parseStatusQuery({
-                    tokenId:
-                        url.searchParams.get("tokenId") ?? undefined,
-                    runsLimit:
-                        url.searchParams.get("runsLimit") ?? undefined,
-                });
-                const tokenId = query.tokenId ?? config.tokenId;
-                const runsLimit =
-                    query.runsLimit ?? config.statusRunsLimit;
-
-                const onchain = await chain.readStatus(tokenId);
-                const autopilot = await store.getAutopilot(tokenId);
-                const strategy = await store.getStrategy(tokenId);
-                const runs = await store.listRuns(tokenId, runsLimit);
-
-                writeJson(res, 200, {
-                    ok: true,
-                    tokenId: tokenId.toString(),
-                    runnerOperator: chain.account.address,
-                    onchainOperator: onchain.onchainOperator,
-                    operatorExpires:
-                        onchain.operatorExpires.toString(),
-                    renter: onchain.renter,
-                    renterExpires: onchain.renterExpires.toString(),
-                    operatorNonce: onchain.operatorNonce.toString(),
-                    autopilot,
-                    strategy,
-                    runs,
-                });
-                return;
-            }
-
-            // ── Strategy Query ─────────────────────────────
-            if (req.method === "GET" && url.pathname === "/strategy") {
-                const query = parseStrategyQuery({
-                    tokenId:
-                        url.searchParams.get("tokenId") ?? undefined,
-                });
-                if (query.tokenId != null) {
-                    const tokenId = BigInt(query.tokenId);
-                    const strategy = await store.getStrategy(tokenId);
-                    writeJson(res, 200, {
-                        ok: true,
-                        tokenId: tokenId.toString(),
-                        strategy,
-                    });
-                    return;
-                }
-                writeJson(res, 200, {
-                    ok: true,
-                    items: await store.listStrategies(),
-                });
-                return;
-            }
-
-            // ── Agent Dashboard ────────────────────────────
-            if (
-                req.method === "GET" &&
-                url.pathname === "/agent/dashboard"
-            ) {
-                const tokenIdParam =
-                    url.searchParams.get("tokenId");
-                if (!tokenIdParam) {
-                    writeJson(res, 400, {
-                        error: "tokenId is required",
-                    });
-                    return;
-                }
-                const tokenId = BigInt(tokenIdParam);
-                // Read-only endpoint — no token allowlist check needed
-                const dashboard = await store.getDashboard(tokenId);
-                writeJson(res, 200, {
-                    ok: true,
-                    tokenId: tokenId.toString(),
-                    ...dashboard,
-                });
-                return;
-            }
-
-            // ── Agent Activity ─────────────────────────────
-            if (
-                req.method === "GET" &&
-                url.pathname === "/agent/activity"
-            ) {
-                const tokenIdParam =
-                    url.searchParams.get("tokenId");
-                if (!tokenIdParam) {
-                    writeJson(res, 400, {
-                        error: "tokenId is required",
-                    });
-                    return;
-                }
-                const tokenId = BigInt(tokenIdParam);
-                // Read-only endpoint — no token allowlist check needed
-                const limitRaw = url.searchParams.get("limit");
-                const offsetRaw = url.searchParams.get("offset");
-                const brainType =
-                    url.searchParams.get("brainType") ?? undefined;
-                const result = await store.getActivity(tokenId, {
-                    limit: limitRaw
-                        ? Number.parseInt(limitRaw, 10)
-                        : undefined,
-                    offset: offsetRaw
-                        ? Number.parseInt(offsetRaw, 10)
-                        : undefined,
-                    brainType,
-                });
-                writeJson(res, 200, {
-                    ok: true,
-                    tokenId: tokenId.toString(),
-                    ...result,
-                });
-                return;
-            }
-
-            // ── Autopilots List ────────────────────────────
-            if (req.method === "GET" && url.pathname === "/shadow/metrics") {
-                const query = parseShadowMetricsQuery({
-                    tokenId: url.searchParams.get("tokenId") ?? undefined,
-                    sinceHours: url.searchParams.get("sinceHours") ?? undefined,
-                });
-                const report = await store.getShadowMetrics({
-                    tokenId: query.tokenId,
-                    sinceHours: query.sinceHours,
-                });
-                writeJson(res, 200, {
-                    ok: true,
-                    ...report,
-                });
-                return;
-            }
-
-            if (req.method === "GET" && url.pathname === "/autopilots") {
-                writeJson(res, 200, {
-                    ok: true,
-                    items: await store.listAutopilots(),
-                });
-                return;
-            }
-
-            // ── Status All ─────────────────────────────────
-            if (req.method === "GET" && url.pathname === "/status/all") {
-                writeJson(res, 200, {
-                    ok: true,
-                    chainId: config.chainId,
-                    runnerOperator: chain.account.address,
-                    autopilots: await store.listAutopilots(),
-                    strategies: await store.listStrategies(),
-                });
-                return;
-            }
-
-            // ── Health ─────────────────────────────────────
-            if (req.method === "GET" && url.pathname === "/health") {
-                const enabledTokenIds =
-                    await store.listEnabledTokenIds();
-                const activeLockCount =
-                    await store.countActiveAutopilotLocks();
-                const syncState = getSignalSyncState();
-                writeJson(res, 200, {
-                    ok: true,
-                    chainId: config.chainId,
-                    runnerOperator: chain.account.address,
-                    enabledCount: enabledTokenIds.length,
-                    activeLockCount,
-                    lastLoopAt: getLastLoopAt(),
-                    pollIntervalMs: config.pollIntervalMs,
-                    marketSignalSync: {
-                        enabled: config.marketSignalSyncEnabled,
-                        sourceConfigured:
-                            !!config.marketSignalSourceUrl,
-                        intervalMs: config.marketSignalSyncIntervalMs,
-                        lastSyncAt: syncState.lastSyncAt || null,
-                        lastError: syncState.lastSyncError,
-                    },
-                    shadowMode: {
-                        enabled: config.shadowModeEnabled,
-                        executeTx: config.shadowExecuteTx,
-                        tokenIds:
-                            config.shadowModeTokenIds.length > 0
-                                ? config.shadowModeTokenIds.map((x: bigint) => x.toString())
-                                : "all",
-                        metricsEndpoint: "/shadow/metrics",
-                    },
-                });
-                return;
-            }
-
-            // ── V3 Modular Routes ──────────────────────────
+            // V3 modular routes (/v3/*)
             const v3Handled = await handleV3Routes(
-                req.method!,
+                req.method,
                 url.pathname,
                 req,
                 res,
                 {
-                    pool: store.getPool(),
+                    pool: ctx.store.getPool(),
                     chainId: config.chainId,
-                    requireAuth: (r) =>
-                        requireApiKey(r, config.apiKey),
+                    requireAuth: (r) => requireApiKey(r, config.apiKey),
                 },
             );
             if (v3Handled) return;
 
-            writeJson(res, 404, { error: "not found" });
+            writeError(res, 404, "not found");
         } catch (err) {
             if (err instanceof ZodError) {
-                writeJson(res, 400, {
-                    error: "invalid request payload",
+                writeError(res, 400, "invalid request payload", {
+                    code: "VALIDATION_ERROR",
                     details: err.issues,
                 });
                 return;
             }
             if (err instanceof SyntaxError) {
-                writeJson(res, 400, {
-                    error: "invalid JSON body",
-                    detail: err.message,
+                writeError(res, 400, "invalid JSON body", {
+                    code: "JSON_PARSE_ERROR",
+                    details: err.message,
                 });
                 return;
             }
             const message =
                 err instanceof Error ? err.message : String(err);
             log.error("API error:", message);
-            writeJson(res, 500, { error: message });
+            writeError(res, 500, "internal server error", {
+                code: "INTERNAL_ERROR",
+            });
         }
     });
 
