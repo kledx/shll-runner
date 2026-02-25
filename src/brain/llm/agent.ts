@@ -317,7 +317,7 @@ export class LLMBrain implements IBrain {
             "1. DECISIONS: Output JSON only: {action, params, reasoning, message, confidence, done?, nextCheckMs?, blocked?, blockReason?}",
             `   Valid actions: ${writeActions.join(", ")}, or 'wait'`,
             "2. TOOL USE: Use get_market_data prior to trading. Use get_portfolio to check vault balances. Do NOT call tools for conversational queries.",
-            "3. SWAP PARAMS: Ensure action='swap' has {router, tokenIn, tokenOut, amountIn, minOut}. minOut MUST be >0 (e.g. expected * 0.95).",
+            "3. SWAP PARAMS: Ensure action='swap' has {router, tokenIn, tokenOut, amountIn}. Do NOT set minOut — it is auto-calculated from on-chain price.",
             "4. AUTOMATED APPROVALS: 'approve' is handled automatically. NEVER output action='approve', just output 'swap'.",
             "5. ROUTING OPTS: Minimize hops. When selling an ERC20, swap to WBNB (not USDT) unless user requests stablecoins.",
             "6. SCHEDULING: Set done=true for one-shot requests. Set done=false with nextCheckMs for recurring/monitoring tasks.",

@@ -111,7 +111,7 @@ export function createSwapAction(): IAction {
                 tokenIn: { type: "string", description: "Input token address. Use 0x0000000000000000000000000000000000000000 for native BNB." },
                 tokenOut: { type: "string", description: "Output token address (0x...)" },
                 amountIn: { type: "string", description: "Amount of input token in wei (e.g. '1000000000000000' for 0.001 with 18 decimals)" },
-                minOut: { type: "string", description: "Minimum output amount in wei. Set to '0' if price impact is acceptable." },
+                minOut: { type: "string", description: "Optional. Minimum output in wei. If omitted, auto-calculated from on-chain price with 5% slippage." },
                 deadline: { type: "number", description: "Unix timestamp deadline (seconds). Optional; defaults to now + 20 minutes." },
             },
             required: ["router", "tokenIn", "tokenOut", "amountIn"],
@@ -149,15 +149,9 @@ export function createSwapAction(): IAction {
 
             const amountIn = BigInt(amountInRaw);
 
-            // SECURITY (MED-1): require explicit minOut to prevent 100% slippage
+            // SECURITY: LLM hint for minOut (optional — we compute from chain if possible)
             const minOutRaw = params.minOut as string | undefined;
-            if (!minOutRaw || minOutRaw === "0") {
-                throw new Error(
-                    "swap BLOCKED: minOut must be set to a non-zero value to prevent sandwich attacks. " +
-                    "Calculate a reasonable minimum output based on current price and slippage tolerance.",
-                );
-            }
-            const minOut = BigInt(minOutRaw);
+            const llmMinOut = (minOutRaw && minOutRaw !== "0") ? BigInt(minOutRaw) : 0n;
 
             const deadline = BigInt(
                 (params.deadline as number) ??
@@ -189,11 +183,10 @@ export function createSwapAction(): IAction {
                 path = [pathIn, pathOut];
             }
 
-            // ── MinOut auto-correction via on-chain getAmountsOut ──
-            // LLM often miscalculates minOut (e.g. calculates for $1 but sends $0.62 BNB).
-            // We call the router's getAmountsOut to get the REAL expected output,
-            // then use 95% of that as minOut (5% slippage tolerance).
-            let correctedMinOut = minOut;
+            // ── Compute minOut from on-chain getAmountsOut ──
+            // This is the source of truth — always prefer chain data over LLM calculation.
+            // LLM's minOut is only used as a last-resort fallback.
+            let finalMinOut = llmMinOut;
             if (params.__getAmountsOut) {
                 const getAmountsOut = params.__getAmountsOut as (
                     router: string, amountIn: bigint, path: string[],
@@ -202,27 +195,25 @@ export function createSwapAction(): IAction {
                     const amounts = await getAmountsOut(router, amountIn, path as string[]);
                     if (amounts.length > 0) {
                         const realExpectedOut = amounts[amounts.length - 1];
-                        // Auto-correct: use 95% of real on-chain quote as minOut
-                        const safeMinOut = (realExpectedOut * 95n) / 100n;
-                        if (minOut > realExpectedOut) {
-                            // LLM's minOut exceeds what the DEX can actually deliver
+                        // 5% slippage tolerance on the real on-chain quote
+                        finalMinOut = (realExpectedOut * 95n) / 100n;
+                        if (llmMinOut > 0n && llmMinOut !== finalMinOut) {
                             console.warn(
-                                `[swap] minOut auto-corrected: LLM=${minOut.toString()} > onChain=${realExpectedOut.toString()}, using safeMinOut=${safeMinOut.toString()}`,
+                                `[swap] minOut: LLM=${llmMinOut.toString()}, onChain=${realExpectedOut.toString()}, using=${finalMinOut.toString()}`,
                             );
-                            correctedMinOut = safeMinOut;
-                        } else if (minOut < (realExpectedOut * 50n) / 100n) {
-                            // LLM's minOut is suspiciously low (below 50% of real output)
-                            // This could indicate a calculation error in the other direction
-                            console.warn(
-                                `[swap] minOut raised: LLM=${minOut.toString()} < 50% of onChain=${realExpectedOut.toString()}, using safeMinOut=${safeMinOut.toString()}`,
-                            );
-                            correctedMinOut = safeMinOut;
                         }
-                        // else: LLM's minOut is reasonable, keep it
                     }
                 } catch {
-                    // getAmountsOut failed — keep LLM's minOut as-is
+                    // getAmountsOut failed — fall through to LLM/default
                 }
+            }
+
+            // Final safety: if we still have no minOut, reject the swap
+            if (finalMinOut <= 0n) {
+                throw new Error(
+                    "swap BLOCKED: unable to determine minOut. On-chain getAmountsOut failed and LLM did not provide a valid minOut. " +
+                    "This may indicate the token pair has no liquidity.",
+                );
             }
 
             // Build the swap payload
@@ -233,7 +224,7 @@ export function createSwapAction(): IAction {
                 const data = encodeFunctionData({
                     abi: SWAP_EXACT_ETH_ABI,
                     functionName: "swapExactETHForTokens",
-                    args: [correctedMinOut, path, vault, deadline],
+                    args: [finalMinOut, path, vault, deadline],
                 });
                 swapPayload = {
                     target: router as Address,
@@ -246,7 +237,7 @@ export function createSwapAction(): IAction {
                 const data = encodeFunctionData({
                     abi: SWAP_EXACT_TOKENS_ABI,
                     functionName: "swapExactTokensForTokens",
-                    args: [amountIn, correctedMinOut, path, vault, deadline],
+                    args: [amountIn, finalMinOut, path, vault, deadline],
                 });
                 swapPayload = {
                     target: router as Address,
