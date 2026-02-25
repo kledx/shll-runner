@@ -86,7 +86,18 @@ export function createTokenInfoAction(publicClient: PublicClient): IAction {
                 ]);
 
                 const decNum = Number(decimals);
-                const supplyNum = Number(totalSupply) / Math.pow(10, decNum);
+                const totalStr = totalSupply.toString();
+
+                // String-based formatting to avoid Number() precision loss for large supplies
+                let totalSupplyFormatted: string;
+                if (decNum === 0 || totalStr === "0") {
+                    totalSupplyFormatted = totalStr;
+                } else if (totalStr.length <= decNum) {
+                    totalSupplyFormatted = "0." + totalStr.padStart(decNum, "0").slice(0, 2);
+                } else {
+                    const intPart = totalStr.slice(0, totalStr.length - decNum);
+                    totalSupplyFormatted = BigInt(intPart).toLocaleString("en-US");
+                }
 
                 return {
                     success: true,
@@ -96,9 +107,7 @@ export function createTokenInfoAction(publicClient: PublicClient): IAction {
                         symbol,
                         decimals: decNum,
                         totalSupply: totalSupply.toString(),
-                        totalSupplyFormatted: supplyNum.toLocaleString("en-US", {
-                            maximumFractionDigits: 2,
-                        }),
+                        totalSupplyFormatted,
                     },
                 };
             } catch (err) {

@@ -69,6 +69,4 @@ export interface BrainContext {
     activeGoals?: GoalEntry[];
     /** Token ID for this agent instance */
     tokenId?: bigint;
-    /** Database pool reference (for goal management) */
-    pool?: unknown;
 }

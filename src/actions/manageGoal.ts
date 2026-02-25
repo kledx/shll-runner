@@ -47,13 +47,14 @@ export function createManageGoalAction(pool: Pool): IAction {
         async execute(params: Record<string, unknown>): Promise<ToolResult> {
             const operation = params.operation as string;
             const goalId = params.goalId as string;
-            const tokenId = params.__tokenId as bigint;
+            const tokenId = params.__tokenId as bigint | undefined;
 
             if (!tokenId) {
                 return { success: false, data: { error: "Missing tokenId context" } };
             }
 
-            const memory = new PgMemory(tokenId, params.__pool as Pool);
+            // Use closure-captured pool — do NOT rely on injected __pool
+            const memory = new PgMemory(tokenId, pool);
 
             try {
                 if (operation === "create") {

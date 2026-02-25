@@ -454,7 +454,6 @@ export class LLMBrain implements IBrain {
                     const result = await manageGoalAction.execute!({
                         ...params,
                         __tokenId: context?.tokenId,
-                        __pool: context?.pool,
                     });
                     return result.success ? result.data : { error: result.error };
                 },
