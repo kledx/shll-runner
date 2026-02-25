@@ -65,6 +65,15 @@ export function buildUserPrompt(
     ];
     const historyLines = memories.slice(0, 10).map(m => {
         const ts = m.timestamp.toISOString().slice(0, 19);
+
+        // Conversation entries — show as clear dialogue turns
+        if (m.type === "user_message") {
+            return `  [${ts}] 👤 USER: ${m.reasoning ?? ""}`;
+        }
+        if (m.type === "agent_reply") {
+            return `  [${ts}] 🤖 YOU: ${m.reasoning ?? ""}`;
+        }
+
         const action = m.action ?? "N/A";
         const status = m.result?.success === true ? "OK" :
             m.result?.success === false ? "FAIL" : "-";

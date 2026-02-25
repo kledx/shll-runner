@@ -249,6 +249,24 @@ export async function runSingleToken(
         const agent = agentManager.getAgent(tokenId);
         if (!agent) return false;
 
+        // ── Conversation Context: store user's message in memory ──
+        // This enables multi-turn understanding: the LLM can see prior
+        // user messages in Recent History even after tradingGoal changes.
+        const currentGoal = strategyPre?.strategyParams?.tradingGoal as string | undefined;
+        if (currentGoal) {
+            // Dedup: only store if different from the latest user_message in memory
+            const recentMems = await agent.memory.recall(5);
+            const lastUserMsg = recentMems.find(m => m.type === "user_message");
+            if (!lastUserMsg || lastUserMsg.reasoning !== currentGoal) {
+                await agent.memory.store({
+                    type: "user_message",
+                    action: "chat",
+                    reasoning: currentGoal,
+                    timestamp: new Date(),
+                });
+            }
+        }
+
         // Run one cognitive cycle
         metrics.inc(METRIC_CYCLES_TOTAL);
         const result = await runAgentCycle(agent, {
@@ -258,6 +276,16 @@ export async function runSingleToken(
             getAmountsOut: chain.getAmountsOut,
         });
         cycleTrace = [...(result.executionTrace ?? [])];
+
+        // ── Conversation Context: store LLM's response message ──
+        if (result.message) {
+            await agent.memory.store({
+                type: "agent_reply",
+                action: result.action,
+                reasoning: result.message,
+                timestamp: new Date(),
+            });
+        }
         log.info(
             `[V3][${tokenId.toString()}] ${result.action}: ${result.reasoning}${result.blocked ? ` [BLOCKED: ${result.blockReason}]` : ""}`,
         );

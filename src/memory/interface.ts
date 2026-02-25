@@ -9,7 +9,7 @@
 //                    Memory Entry Types
 // ═══════════════════════════════════════════════════════
 
-export type MemoryEntryType = "execution" | "decision" | "blocked" | "observation" | "goal";
+export type MemoryEntryType = "execution" | "decision" | "blocked" | "observation" | "goal" | "user_message" | "agent_reply";
 
 export interface MemoryEntry {
     /** Entry type */
