@@ -128,11 +128,16 @@ export async function listSchedulableTokenIds(
 ): Promise<bigint[]> {
     const result = await pool.query(
         `
-        SELECT DISTINCT ts.token_id
-        FROM token_strategies ts
-        JOIN autopilots ap ON ts.chain_id = ap.chain_id AND ts.token_id = ap.token_id
-        WHERE ts.chain_id = $1 AND ts.enabled = TRUE AND ap.enabled = TRUE
-        ORDER BY COALESCE(ts.next_check_at, '1970-01-01'::timestamptz) ASC
+        SELECT token_id FROM (
+            SELECT DISTINCT ON (ts.token_id)
+                ts.token_id,
+                COALESCE(ts.next_check_at, '1970-01-01'::timestamptz) AS priority
+            FROM token_strategies ts
+            JOIN autopilots ap ON ts.chain_id = ap.chain_id AND ts.token_id = ap.token_id
+            WHERE ts.chain_id = $1 AND ts.enabled = TRUE AND ap.enabled = TRUE
+            ORDER BY ts.token_id, priority ASC
+        ) sub
+        ORDER BY priority ASC
         `,
         [chainId],
     );
