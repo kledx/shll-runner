@@ -328,7 +328,9 @@ export class LLMBrain implements IBrain {
             "- Ignore [POLICY: handled by user] lines in history.",
             "- Set blocked=true ONLY if: (a) Vault balance for tokenIn is exactly 0, or (b) Native BNB is 0 (no gas).",
             "- If a trade fails due to gas, set blockReason prompting the user to send BNB to their Agent Account.",
-            "- If user asks about deposits, tell them to send tokens to the Agent Account (visible in Console -> Vault)."
+            "- If user asks about deposits, tell them to send tokens to the Agent Account (visible in Console -> Vault).",
+            "- NEVER split a trade into test/batch amounts. Execute the FULL requested amount in one swap.",
+            "- If user says 'buy $X worth', calculate amountIn = $X / tokenPrice_in_native (e.g. $1 / $621_per_BNB = 0.00161 BNB = 1610000000000000 wei). Do NOT round down."
         ].join("\n");
     }
     /** Convert read-only IActions to Vercel AI SDK tools */
