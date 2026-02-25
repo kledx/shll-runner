@@ -26,6 +26,9 @@ import { createWrapAction } from "./actions/wrap.js";
 import { createAnalyticsAction } from "./actions/analytics.js";
 import { createPortfolioAction } from "./actions/portfolio.js";
 import { createAllowanceAction } from "./actions/allowance.js";
+import { createSwapQuoteAction } from "./actions/swapQuote.js";
+import { createTokenInfoAction } from "./actions/tokenInfo.js";
+import { createTransferAction } from "./actions/transfer.js";
 import { SoftPolicyEngine } from "./guardrails/softPolicy.js";
 import { HardPolicyGuard, CombinedGuardrails, type HardPolicyConfig } from "./guardrails/hardPolicy.js";
 
@@ -169,6 +172,9 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
     registerAction("analytics", createAnalyticsAction);
     registerAction("portfolio", createPortfolioAction);
     registerAction("allowance", createAllowanceAction);
+    registerAction("get_swap_quote", () => createSwapQuoteAction(config.publicClient));
+    registerAction("get_token_info", () => createTokenInfoAction(config.publicClient));
+    registerAction("transfer", createTransferAction);
 
     // ── Guardrails (Soft + Hard) ───────────────────────
     const hardPolicyConfig: HardPolicyConfig = {
