@@ -146,7 +146,16 @@ export async function runAgentCycle(
     }
 
     const memories = await agent.memory.recall(20);
-    const decision = await agent.brain.think(observation, memories, agent.actions);
+
+    // Load active goals if memory module supports it
+    const activeGoals = agent.memory.getActiveGoals
+        ? await agent.memory.getActiveGoals()
+        : undefined;
+
+    const decision = await agent.brain.think(observation, memories, agent.actions, {
+        activeGoals,
+        tokenId: agent.tokenId,
+    });
     const decisionParams = decision.params ?? {};
     const confidence = Number.isFinite(decision.confidence)
         ? Math.max(0, Math.min(1, decision.confidence))

@@ -19,7 +19,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { z } from "zod";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
-import type { IBrain, Decision } from "../interface.js";
+import type { IBrain, Decision, BrainContext } from "../interface.js";
 import type { Observation } from "../../perception/interface.js";
 import type { MemoryEntry } from "../../memory/interface.js";
 import type { IAction } from "../../actions/interface.js";
@@ -90,13 +90,14 @@ export class LLMBrain implements IBrain {
         obs: Observation,
         memories: MemoryEntry[],
         actions: IAction[],
+        context?: BrainContext,
     ): Promise<Decision> {
         const systemPrompt = this.buildSystemPrompt(actions);
-        const userPrompt = buildUserPrompt(obs, memories);
+        const userPrompt = buildUserPrompt(obs, memories, context?.activeGoals);
         const maxSteps = this.config.maxStepsPerRun || 5;
 
         // Always give LLM full tool access — let the model decide when to use them
-        const aiTools = this.buildTools(actions, obs);
+        const aiTools = this.buildTools(actions, obs, context);
         const toolChoice = "auto" as const;
 
         console.log(`  [LLM] goal="${(this.config.tradingGoal ?? "").slice(0, 60)}" maxSteps=${maxSteps}`);
@@ -316,12 +317,32 @@ export class LLMBrain implements IBrain {
             "## Core Rules",
             "1. DECISIONS: Output JSON only: {action, params, reasoning, message, confidence, done?, nextCheckMs?, blocked?, blockReason?}",
             `   Valid actions: ${writeActions.join(", ")}, or 'wait'`,
-            "2. TOOL USE: Use get_market_data prior to trading. Use get_portfolio to check vault balances. Do NOT call tools for conversational queries.",
+            "2. TOOL USE: Use get_market_data prior to trading. Use get_portfolio to check vault balances. Use get_swap_quote for exact on-chain prices. Use get_token_info to verify token identity. Do NOT call tools for conversational queries.",
             "3. SWAP PARAMS: Ensure action='swap' has {router, tokenIn, tokenOut, amountIn}. Do NOT set minOut — it is auto-calculated from on-chain price.",
             "4. AUTOMATED APPROVALS: 'approve' is handled automatically. NEVER output action='approve', just output 'swap'.",
             "5. ROUTING OPTS: Minimize hops. When selling an ERC20, swap to WBNB (not USDT) unless user requests stablecoins.",
-            "6. SCHEDULING: Set done=true for one-shot requests. Set done=false with nextCheckMs for recurring/monitoring tasks.",
-            "7. MESSAGING: Reply in the SAME language as the user. Use a conversational tone.",
+            "6. MESSAGING: Reply in the SAME language as the user. Use a conversational tone.",
+            "",
+            "## Adaptive Scheduling",
+            "Use nextCheckMs to control when you are next activated. You MUST set it intelligently based on context:",
+            "- ONE-SHOT TASKS (buy/sell/transfer): Set done=true after execution. No nextCheckMs needed.",
+            "- ACTIVE MONITORING (user said 'watch', 'monitor', 'DCA', or similar):",
+            "  · High volatility (>5% price change): nextCheckMs=10000 (10s) — check frequently",
+            "  · Normal market: nextCheckMs=60000 (1min) — standard check",
+            "  · Low activity / waiting for price target: nextCheckMs=300000 (5min) — save resources",
+            "- POSITION MANAGEMENT (you hold a token being monitored):",
+            "  · Price approaching stop-loss: nextCheckMs=5000 (5s) — urgent monitoring",
+            "  · Price moving favorably: nextCheckMs=30000 (30s) — moderate monitoring",
+            "  · Stable / sideways: nextCheckMs=120000 (2min) — relaxed monitoring",
+            "- DEFAULT: If unsure, set nextCheckMs=60000.",
+            "",
+            "## Proactive Behavior",
+            "When you have an active monitoring task (done=false), you should:",
+            "- CHECK portfolio and market data each cycle to detect changes",
+            "- ACT on opportunities: if price hit a target you previously noted, execute the trade",
+            "- REPORT significant changes via 'message' even if you decide to wait",
+            "- TRACK your goals: remember what you are monitoring and why from conversation history",
+            "- ADJUST your check interval based on how close conditions are to triggering action",
             "",
             "## Handling Blocks & Errors",
             "- DO NOT refuse trades for 'whitelist' or 'policy' reasons. The systemic guardrails handle this. Submit the trade anyway.",
@@ -330,13 +351,15 @@ export class LLMBrain implements IBrain {
             "- If a trade fails due to gas, set blockReason prompting the user to send BNB to their Agent Account.",
             "- If user asks about deposits, tell them to send tokens to the Agent Account (visible in Console -> Vault).",
             "- NEVER split a trade into test/batch amounts. Execute the FULL requested amount in one swap.",
-            "- If user says 'buy $X worth', calculate amountIn = $X / tokenPrice_in_native (e.g. $1 / $621_per_BNB = 0.00161 BNB = 1610000000000000 wei). Do NOT round down."
+            "- If user says 'buy $X worth', calculate amountIn = $X / tokenPrice_in_native (e.g. $1 / $621_per_BNB = 0.00161 BNB = 1610000000000000 wei). Do NOT round down.",
+            "- If a previous trade failed, retry with the same parameters — the system auto-corrects minOut now."
         ].join("\n");
     }
     /** Convert read-only IActions to Vercel AI SDK tools */
     private buildTools(
         actions: IAction[],
         obs: Observation,
+        context?: BrainContext,
     ) {
         // Build tool definitions from read-only actions
         const readonlyActions = actions.filter(a => a.readonly && a.execute);
@@ -382,6 +405,57 @@ export class LLMBrain implements IBrain {
                 }),
                 execute: async ({ token, spender }: { token: string; spender: string }) => {
                     const result = await allowanceAction.execute!({ token, owner: obs.vaultAddress, spender });
+                    return result.success ? result.data : { error: result.error };
+                },
+            });
+        }
+
+        const swapQuoteAction = readonlyActions.find(a => a.name === "get_swap_quote");
+        if (swapQuoteAction) {
+            tools.get_swap_quote = tool({
+                description: swapQuoteAction.description,
+                inputSchema: z.object({
+                    router: z.string().describe("DEX router address"),
+                    tokenIn: z.string().describe("Input token address (0x0...0 for BNB)"),
+                    tokenOut: z.string().describe("Output token address"),
+                    amountIn: z.string().describe("Amount in wei"),
+                }),
+                execute: async (params: Record<string, string>) => {
+                    const result = await swapQuoteAction.execute!(params);
+                    return result.success ? result.data : { error: result.error };
+                },
+            });
+        }
+
+        const tokenInfoAction = readonlyActions.find(a => a.name === "get_token_info");
+        if (tokenInfoAction) {
+            tools.get_token_info = tool({
+                description: tokenInfoAction.description,
+                inputSchema: z.object({
+                    tokenAddress: z.string().describe("ERC20 token contract address"),
+                }),
+                execute: async ({ tokenAddress }: { tokenAddress: string }) => {
+                    const result = await tokenInfoAction.execute!({ tokenAddress });
+                    return result.success ? result.data : { error: result.error };
+                },
+            });
+        }
+
+        const manageGoalAction = readonlyActions.find(a => a.name === "manage_goal");
+        if (manageGoalAction) {
+            tools.manage_goal = tool({
+                description: manageGoalAction.description,
+                inputSchema: z.object({
+                    operation: z.enum(["create", "complete"]).describe("'create' or 'complete'"),
+                    goalId: z.string().describe("Unique goal ID (snake_case)"),
+                    description: z.string().optional().describe("Goal description (required for create)"),
+                }),
+                execute: async (params: { operation: string; goalId: string; description?: string }) => {
+                    const result = await manageGoalAction.execute!({
+                        ...params,
+                        __tokenId: context?.tokenId,
+                        __pool: context?.pool,
+                    });
                     return result.success ? result.data : { error: result.error };
                 },
             });

@@ -6,7 +6,7 @@
  */
 
 import type { Pool } from "pg";
-import type { IMemory, MemoryEntry, MemoryEntryType } from "./interface.js";
+import type { IMemory, MemoryEntry, MemoryEntryType, GoalEntry } from "./interface.js";
 
 // ═══════════════════════════════════════════════════════
 //            PgMemory Implementation
@@ -22,7 +22,7 @@ export class PgMemory implements IMemory {
         const result = await this.pool.query(
             `SELECT type, action, params, result, reasoning, timestamp
              FROM agent_memory
-             WHERE token_id = $1
+             WHERE token_id = $1 AND type != 'goal'
              ORDER BY timestamp DESC
              LIMIT $2`,
             [this.tokenId.toString(), limit],
@@ -63,6 +63,84 @@ export class PgMemory implements IMemory {
         });
 
         return lines.join("\n");
+    }
+
+    // ── Goal Tracking ──────────────────────────────────
+
+    /**
+     * Store or update an active goal.
+     * Uses agent_memory with type='goal', action=goalId.
+     * Upsert: if goalId exists, update description and metadata.
+     */
+    async storeGoal(goalId: string, description: string, metadata?: Record<string, unknown>): Promise<void> {
+        // Check if goal already exists
+        const existing = await this.pool.query(
+            `SELECT 1 FROM agent_memory
+             WHERE token_id = $1 AND type = 'goal' AND action = $2
+             LIMIT 1`,
+            [this.tokenId.toString(), goalId],
+        );
+
+        if (existing.rows.length > 0) {
+            // Update existing goal
+            await this.pool.query(
+                `UPDATE agent_memory
+                 SET reasoning = $3, params = $4, timestamp = NOW()
+                 WHERE token_id = $1 AND type = 'goal' AND action = $2`,
+                [
+                    this.tokenId.toString(),
+                    goalId,
+                    description,
+                    metadata ? JSON.stringify(metadata) : null,
+                ],
+            );
+        } else {
+            // Insert new goal
+            await this.pool.query(
+                `INSERT INTO agent_memory (token_id, type, action, params, result, reasoning, timestamp)
+                 VALUES ($1, 'goal', $2, $3, NULL, $4, NOW())`,
+                [
+                    this.tokenId.toString(),
+                    goalId,
+                    metadata ? JSON.stringify(metadata) : null,
+                    description,
+                ],
+            );
+        }
+    }
+
+    /**
+     * Get all active (non-completed) goals for this agent.
+     * Active = type='goal' AND result IS NULL (completed goals have result set).
+     */
+    async getActiveGoals(): Promise<GoalEntry[]> {
+        const result = await this.pool.query(
+            `SELECT action AS goal_id, reasoning AS description, params AS metadata,
+                    timestamp AS created_at
+             FROM agent_memory
+             WHERE token_id = $1 AND type = 'goal' AND result IS NULL
+             ORDER BY timestamp ASC`,
+            [this.tokenId.toString()],
+        );
+
+        return result.rows.map(row => ({
+            goalId: String(row.goal_id),
+            description: String(row.description ?? ""),
+            metadata: row.metadata as Record<string, unknown> | undefined,
+            createdAt: new Date(row.created_at as string),
+        }));
+    }
+
+    /**
+     * Mark a goal as completed (sets result to {success: true}).
+     */
+    async completeGoal(goalId: string): Promise<void> {
+        await this.pool.query(
+            `UPDATE agent_memory
+             SET result = '{"success": true}'::jsonb
+             WHERE token_id = $1 AND type = 'goal' AND action = $2 AND result IS NULL`,
+            [this.tokenId.toString(), goalId],
+        );
     }
 }
 

@@ -8,7 +8,7 @@
  */
 
 import type { Observation } from "../perception/interface.js";
-import type { MemoryEntry } from "../memory/interface.js";
+import type { MemoryEntry, GoalEntry } from "../memory/interface.js";
 import type { IAction } from "../actions/interface.js";
 
 // ═══════════════════════════════════════════════════════
@@ -59,5 +59,16 @@ export interface IBrain {
         obs: Observation,
         memories: MemoryEntry[],
         actions: IAction[],
+        context?: BrainContext,
     ): Promise<Decision>;
+}
+
+/** Optional extra context passed to Brain for enhanced decision-making */
+export interface BrainContext {
+    /** Active goals the agent is tracking */
+    activeGoals?: GoalEntry[];
+    /** Token ID for this agent instance */
+    tokenId?: bigint;
+    /** Database pool reference (for goal management) */
+    pool?: unknown;
 }

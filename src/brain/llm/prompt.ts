@@ -7,6 +7,7 @@
 
 import type { Observation, TokenBalance } from "../../perception/interface.js";
 import type { MemoryEntry } from "../../memory/interface.js";
+import type { GoalEntry } from "../../memory/interface.js";
 
 // ═══════════════════════════════════════════════════════
 //                  Helpers
@@ -42,6 +43,7 @@ function weiToBnb(wei: bigint): string {
 export function buildUserPrompt(
     obs: Observation,
     memories: MemoryEntry[],
+    activeGoals?: GoalEntry[],
 ): string {
     // Vault state — show human-readable balances
     const vaultLines = obs.vault.length > 0
@@ -74,6 +76,15 @@ export function buildUserPrompt(
         return `  [${ts}] ${status} ${m.type}: ${action}${errorInfo} — ${m.reasoning ?? ""}`;
     });
 
+    // Active goals — persistent objectives the agent is tracking
+    const goalLines = (activeGoals && activeGoals.length > 0)
+        ? activeGoals.map(g => {
+            const age = Math.round((Date.now() - g.createdAt.getTime()) / 60000);
+            const meta = g.metadata ? ` | ${JSON.stringify(g.metadata)}` : "";
+            return `  [${g.goalId}] ${g.description} (active ${age}min${meta})`;
+        })
+        : null;
+
     const parts: string[] = [
         "## Current State",
         `Native Balance: ${weiToBnb(obs.nativeBalance)} BNB (${obs.nativeBalance.toString()} wei)`,
@@ -87,12 +98,22 @@ export function buildUserPrompt(
         `Gas: ${obs.gasPrice} wei`,
         `Block: ${obs.blockNumber}`,
         `Paused: ${obs.paused}`,
+    ];
+
+    // Inject active goals section
+    if (goalLines) {
+        parts.push("", "## Active Goals");
+        parts.push(...goalLines);
+        parts.push("Review these goals and take action if conditions are met. Set done=true and completeGoal when a goal is fulfilled.");
+    }
+
+    parts.push(
         "",
         "## Recent History",
         ...(historyLines.length > 0 ? historyLines : ["  No previous activity"]),
         "",
         "Analyze the user's intent. Only call tools if you need more data to fulfill the request.",
-    ];
+    );
 
     return parts.join("\n");
 }

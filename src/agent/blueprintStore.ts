@@ -22,7 +22,7 @@ const BUILTIN_BLUEPRINTS: Record<string, AgentBlueprint> = {
     },
     llm_trader: {
         brain: "llm",
-        actions: ["swap", "approve", "wrap", "analytics", "portfolio", "allowance", "get_swap_quote", "get_token_info", "transfer"],
+        actions: ["swap", "approve", "wrap", "analytics", "portfolio", "allowance", "get_swap_quote", "get_token_info", "transfer", "manage_goal"],
         perception: "defi",
         llmConfig: {
             systemPrompt: "You are a DeFi trading agent. Analyze market data and vault positions to make profitable trades. Be conservative and prioritize capital preservation.",
@@ -33,7 +33,7 @@ const BUILTIN_BLUEPRINTS: Record<string, AgentBlueprint> = {
     },
     llm_defi: {
         brain: "llm",
-        actions: ["swap", "approve", "wrap", "analytics", "portfolio", "allowance", "get_swap_quote", "get_token_info", "transfer"],
+        actions: ["swap", "approve", "wrap", "analytics", "portfolio", "allowance", "get_swap_quote", "get_token_info", "transfer", "manage_goal"],
         perception: "defi",
         llmConfig: {
             systemPrompt: "You are an advanced DeFi agent capable of multi-step strategies. Analyze positions, market trends, and optimize yield across protocols.",
