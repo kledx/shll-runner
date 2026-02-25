@@ -58,6 +58,7 @@ export interface ChainServices {
         "None" | "Active" | "GracePeriod" | "Expired" | "Canceled"
     >;
     readCooldownSeconds: (instanceId: bigint) => Promise<number>;
+    getAmountsOut: (router: string, amountIn: bigint, path: string[]) => Promise<bigint[]>;
 }
 
 interface ChainConfig {
@@ -282,6 +283,33 @@ export function createChainServices(config: ChainConfig): ChainServices {
         }
     }
 
+    const GET_AMOUNTS_OUT_ABI = [
+        {
+            type: "function" as const,
+            name: "getAmountsOut",
+            inputs: [
+                { name: "amountIn", type: "uint256" },
+                { name: "path", type: "address[]" },
+            ],
+            outputs: [{ name: "amounts", type: "uint256[]" }],
+            stateMutability: "view" as const,
+        },
+    ] as const;
+
+    async function getAmountsOut(routerAddr: string, amountIn: bigint, path: string[]): Promise<bigint[]> {
+        try {
+            const result = await reader.publicClient.readContract({
+                address: routerAddr as Address,
+                abi: GET_AMOUNTS_OUT_ABI,
+                functionName: "getAmountsOut",
+                args: [amountIn, path as Address[]],
+            });
+            return [...result];
+        } catch {
+            return [];
+        }
+    }
+
     return {
         publicClient: reader.publicClient as any,
         account: { address: builder.accountAddress },
@@ -295,5 +323,6 @@ export function createChainServices(config: ChainConfig): ChainServices {
         readAgentType,
         readSubscriptionStatus,
         readCooldownSeconds,
+        getAmountsOut,
     };
 }

@@ -42,6 +42,8 @@ export interface RunCycleOptions {
     minActionConfidence?: number;
     /** Injected by scheduler for swap auto-approve batch support */
     readAllowance?: (token: string, owner: string, spender: string) => Promise<bigint>;
+    /** Injected by scheduler for swap minOut auto-correction */
+    getAmountsOut?: (router: string, amountIn: bigint, path: string[]) => Promise<bigint[]>;
 }
 
 function addTrace(
@@ -417,6 +419,10 @@ export async function runAgentCycle(
     // Inject readAllowance for swap auto-approve batching
     if (options?.readAllowance) {
         encodeParams.__readAllowance = options.readAllowance;
+    }
+    // Inject getAmountsOut for swap minOut auto-correction
+    if (options?.getAmountsOut) {
+        encodeParams.__getAmountsOut = options.getAmountsOut;
     }
     const payload = await Promise.resolve(actionModule.encode(encodeParams));
 

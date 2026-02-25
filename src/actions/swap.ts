@@ -189,6 +189,42 @@ export function createSwapAction(): IAction {
                 path = [pathIn, pathOut];
             }
 
+            // ── MinOut auto-correction via on-chain getAmountsOut ──
+            // LLM often miscalculates minOut (e.g. calculates for $1 but sends $0.62 BNB).
+            // We call the router's getAmountsOut to get the REAL expected output,
+            // then use 95% of that as minOut (5% slippage tolerance).
+            let correctedMinOut = minOut;
+            if (params.__getAmountsOut) {
+                const getAmountsOut = params.__getAmountsOut as (
+                    router: string, amountIn: bigint, path: string[],
+                ) => Promise<bigint[]>;
+                try {
+                    const amounts = await getAmountsOut(router, amountIn, path as string[]);
+                    if (amounts.length > 0) {
+                        const realExpectedOut = amounts[amounts.length - 1];
+                        // Auto-correct: use 95% of real on-chain quote as minOut
+                        const safeMinOut = (realExpectedOut * 95n) / 100n;
+                        if (minOut > realExpectedOut) {
+                            // LLM's minOut exceeds what the DEX can actually deliver
+                            console.warn(
+                                `[swap] minOut auto-corrected: LLM=${minOut.toString()} > onChain=${realExpectedOut.toString()}, using safeMinOut=${safeMinOut.toString()}`,
+                            );
+                            correctedMinOut = safeMinOut;
+                        } else if (minOut < (realExpectedOut * 50n) / 100n) {
+                            // LLM's minOut is suspiciously low (below 50% of real output)
+                            // This could indicate a calculation error in the other direction
+                            console.warn(
+                                `[swap] minOut raised: LLM=${minOut.toString()} < 50% of onChain=${realExpectedOut.toString()}, using safeMinOut=${safeMinOut.toString()}`,
+                            );
+                            correctedMinOut = safeMinOut;
+                        }
+                        // else: LLM's minOut is reasonable, keep it
+                    }
+                } catch {
+                    // getAmountsOut failed — keep LLM's minOut as-is
+                }
+            }
+
             // Build the swap payload
             let swapPayload: ActionPayload;
 
@@ -197,7 +233,7 @@ export function createSwapAction(): IAction {
                 const data = encodeFunctionData({
                     abi: SWAP_EXACT_ETH_ABI,
                     functionName: "swapExactETHForTokens",
-                    args: [minOut, path, vault, deadline],
+                    args: [correctedMinOut, path, vault, deadline],
                 });
                 swapPayload = {
                     target: router as Address,
@@ -210,7 +246,7 @@ export function createSwapAction(): IAction {
                 const data = encodeFunctionData({
                     abi: SWAP_EXACT_TOKENS_ABI,
                     functionName: "swapExactTokensForTokens",
-                    args: [amountIn, minOut, path, vault, deadline],
+                    args: [amountIn, correctedMinOut, path, vault, deadline],
                 });
                 swapPayload = {
                     target: router as Address,

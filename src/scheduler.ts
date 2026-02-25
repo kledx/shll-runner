@@ -255,6 +255,7 @@ export async function runSingleToken(
             shadowCompare: shadowMode,
             minActionConfidence: config.llmMinActionConfidence,
             readAllowance: chain.readAllowance,
+            getAmountsOut: chain.getAmountsOut,
         });
         cycleTrace = [...(result.executionTrace ?? [])];
         log.info(
