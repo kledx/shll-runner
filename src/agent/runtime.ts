@@ -431,7 +431,11 @@ export async function runAgentCycle(
     const minOutRaw = plan.params.minOut as string | undefined;
     const amountInBig = amountInRaw ? BigInt(amountInRaw) : undefined;
     const minOutBig = minOutRaw ? BigInt(minOutRaw) : undefined;
-    const spendAmount = primaryPayload.value > 0n ? primaryPayload.value : (amountInBig ?? 0n);
+    // spendAmount tracks BNB spend for soft policy per-trade limit.
+    // For ERC20-to-ERC20 swaps (value=0), amountIn is raw token wei
+    // which has different denomination than BNB. Don't use it as spendAmount
+    // to avoid dimensional mismatch (e.g. 16 shitcoins != 16 BNB).
+    const spendAmount = primaryPayload.value > 0n ? primaryPayload.value : 0n;
 
     const actionTokens: string[] = [];
     if (plan.params.tokenIn) {
