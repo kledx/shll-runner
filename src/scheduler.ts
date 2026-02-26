@@ -455,6 +455,12 @@ export async function runSingleToken(
         const nextCheckAt = new Date(Date.now() + nextMs);
         await store.updateNextCheckAt(tokenId, nextCheckAt);
 
+        log.info(
+            `[V3][${tokenId.toString()}] nextCheck in ${Math.round(nextMs / 1000)}s` +
+            (allowWaitCadenceBypass ? " (wait-cadence)" : allowTxFollowupBypass ? " (tx-followup)" : "") +
+            (hasNextCheck ? ` (LLM requested ${Math.round(result.nextCheckMs! / 1000)}s)` : " (default)"),
+        );
+
         // Skip TX submission for non-acting decisions
         if (!result.acted || result.blocked || !result.payload) {
             return true;
