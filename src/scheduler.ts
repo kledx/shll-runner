@@ -219,8 +219,10 @@ export async function runSingleToken(
                 if (agentManager.isActive(tokenId)) {
                     agentManager.stopAgent(tokenId);
                 }
+                // Disable autopilot so scheduler skips this token on future cycles
+                await store.disable(tokenId, "ERC-4907 lease expired");
                 log.info(
-                    `[P-040][${tokenId.toString()}] ERC-4907 lease expired (${leaseExpiry.toString()}) — agent stopped`,
+                    `[P-040][${tokenId.toString()}] ERC-4907 lease expired (${leaseExpiry.toString()}) — agent stopped & autopilot disabled`,
                 );
                 return false;
             }
