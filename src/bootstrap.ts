@@ -28,6 +28,7 @@ import { createPortfolioAction } from "./actions/portfolio.js";
 import { createAllowanceAction } from "./actions/allowance.js";
 import { createSwapQuoteAction } from "./actions/swapQuote.js";
 import { createTokenInfoAction } from "./actions/tokenInfo.js";
+import { createSearchTokenAction } from "./actions/searchToken.js";
 import { createTransferAction } from "./actions/transfer.js";
 import { createManageGoalAction } from "./actions/manageGoal.js";
 import { SoftPolicyEngine } from "./guardrails/softPolicy.js";
@@ -177,6 +178,7 @@ export function bootstrapAgentModules(config: BootstrapConfig): void {
     registerAction("get_token_info", () => createTokenInfoAction(config.publicClient));
     registerAction("transfer", createTransferAction);
     registerAction("manage_goal", () => createManageGoalAction(config.pool));
+    registerAction("search_token", createSearchTokenAction);
 
     // ── Guardrails (Soft + Hard) ───────────────────────
     const hardPolicyConfig: HardPolicyConfig = {

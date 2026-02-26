@@ -362,7 +362,7 @@ export class LLMBrain implements IBrain {
             "7. TOKEN IDENTITY: ALWAYS identify tokens by contract address (0x...), NEVER by name alone.",
             "   Multiple tokens can share similar names. The contract address is the only unique identifier.",
             "   If you have an Active Goal with a token address, use THAT exact address for all operations.",
-            "   When the user mentions a token by name, call get_token_info with the address to verify before acting.",
+            "   When the user mentions a token by name, call search_token to find the address. Do NOT ask the user for it.",
             "8. ACTIVE GOALS = GROUND TRUTH: If the 'Active Goals' section lists a goal with a token address,",
             "   that is the authoritative source. Your monitoring and actions MUST target that specific token.",
             "   Do NOT reinterpret or replace it with a different token.",
