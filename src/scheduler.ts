@@ -211,6 +211,21 @@ export async function runSingleToken(
             return false;
         }
 
+        // P-2026-040: Fallback to ERC-4907 lease expiry for legacy instances (no subscription)
+        if (subStatus === "None") {
+            const leaseExpiry = await chain.readUserExpires(tokenId);
+            const nowSec = BigInt(Math.floor(Date.now() / 1000));
+            if (leaseExpiry > 0n && leaseExpiry < nowSec) {
+                if (agentManager.isActive(tokenId)) {
+                    agentManager.stopAgent(tokenId);
+                }
+                log.info(
+                    `[P-040][${tokenId.toString()}] ERC-4907 lease expired (${leaseExpiry.toString()}) — agent stopped`,
+                );
+                return false;
+            }
+        }
+
         // P-2026-018: Skip LLM agents with no tradingGoal (standby mode)
         const strategyPre = await store.getStrategy(tokenId);
         const isLlmAgent = strategyPre?.strategyType?.startsWith("llm_");

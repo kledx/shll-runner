@@ -58,6 +58,7 @@ export interface ChainServices {
         "None" | "Active" | "GracePeriod" | "Expired" | "Canceled"
     >;
     readCooldownSeconds: (instanceId: bigint) => Promise<number>;
+    readUserExpires: (tokenId: bigint) => Promise<bigint>;
     getAmountsOut: (router: string, amountIn: bigint, path: string[]) => Promise<bigint[]>;
 }
 
@@ -283,6 +284,21 @@ export function createChainServices(config: ChainConfig): ChainServices {
         }
     }
 
+    // P-2026-040: Read ERC-4907 userExpires for lease expiry fallback
+    async function readUserExpires(tokenId: bigint): Promise<bigint> {
+        try {
+            const expires = await reader.publicClient.readContract({
+                address: config.agentNfaAddress as Address,
+                abi: AgentNFAAbi,
+                functionName: "userExpires",
+                args: [tokenId],
+            });
+            return BigInt(expires as any);
+        } catch {
+            return 0n;
+        }
+    }
+
     const GET_AMOUNTS_OUT_ABI = [
         {
             type: "function" as const,
@@ -323,6 +339,7 @@ export function createChainServices(config: ChainConfig): ChainServices {
         readAgentType,
         readSubscriptionStatus,
         readCooldownSeconds,
+        readUserExpires,
         getAmountsOut,
     };
 }
