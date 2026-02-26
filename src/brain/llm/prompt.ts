@@ -90,7 +90,9 @@ export function buildUserPrompt(
         ? activeGoals.map(g => {
             const age = Math.round((Date.now() - g.createdAt.getTime()) / 60000);
             const meta = g.metadata ? ` | ${JSON.stringify(g.metadata)}` : "";
-            return `  [${g.goalId}] ${g.description} (active ${age}min${meta})`;
+            // SEC-1: sanitize description to prevent prompt injection
+            const desc = (g.description ?? "").slice(0, 200).replace(/[#>]/g, "");
+            return `  [${g.goalId}] ${desc} (active ${age}min${meta})`;
         })
         : null;
 

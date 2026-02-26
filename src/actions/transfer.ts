@@ -64,6 +64,8 @@ export function createTransferAction(): IAction {
                 throw new Error("transfer: amount must be > 0");
             }
 
+            console.warn(`[transfer] AUDIT: token=${token} to=${to} amount=${amountRaw}`);
+
             const data = encodeFunctionData({
                 abi: ERC20_TRANSFER_ABI,
                 functionName: "transfer",

@@ -22,12 +22,49 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 import type { IBrain, Decision, BrainContext } from "../interface.js";
 import type { Observation } from "../../perception/interface.js";
 import type { MemoryEntry } from "../../memory/interface.js";
-import type { IAction } from "../../actions/interface.js";
+import type { IAction, ToolParameters } from "../../actions/interface.js";
 import type { LLMConfig } from "../../agent/agent.js";
 import { buildUserPrompt } from "./prompt.js";
 import { sanitizeForUser } from "../../errors.js";
 import { getChainAddressBook, getChainIdFromEnv } from "../../chainDefaults.js";
 import * as cadenceRuntime from "./cadence.js";
+
+// ═══════════════════════════════════════════════════════
+//              JSON Schema → Zod Converter
+// ═══════════════════════════════════════════════════════
+
+/** Convert IAction ToolParameters (JSON Schema subset) to a Zod object schema.
+ *  Supports: string, number, boolean, enum. Falls back to z.string() for unknown types.
+ */
+function toolParamsToZod(params: ToolParameters) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shape: Record<string, any> = {};
+    const required = new Set(params.required ?? []);
+
+    for (const [key, prop] of Object.entries(params.properties)) {
+        let field: z.ZodTypeAny;
+        if (prop.enum && prop.enum.length > 0) {
+            field = z.enum(prop.enum as [string, ...string[]]);
+        } else {
+            switch (prop.type) {
+                case "number":
+                case "integer":
+                    field = z.number();
+                    break;
+                case "boolean":
+                    field = z.boolean();
+                    break;
+                default:
+                    field = z.string();
+            }
+        }
+        if (prop.description) {
+            field = field.describe(prop.description);
+        }
+        shape[key] = required.has(key) ? field : field.optional();
+    }
+    return z.object(shape);
+}
 
 // ═══════════════════════════════════════════════════════
 //                   Decision Schema
@@ -370,109 +407,75 @@ export class LLMBrain implements IBrain {
             "- If a previous trade failed, retry with the same parameters — the system auto-corrects minOut now."
         ].join("\n");
     }
-    /** Convert read-only IActions to Vercel AI SDK tools */
+    /** Convert read-only IActions to Vercel AI SDK tools.
+     *  ARCH-1: Generic actions auto-register from IAction.parameters.
+     *  Special actions (need injected params) use TOOL_OVERRIDES.
+     */
     private buildTools(
         actions: IAction[],
         obs: Observation,
         context?: BrainContext,
     ) {
-        // Build tool definitions from read-only actions
         const readonlyActions = actions.filter(a => a.readonly && a.execute);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const tools: Record<string, any> = {};
 
-        const marketDataAction = readonlyActions.find(a => a.name === "get_market_data");
-        if (marketDataAction) {
-            tools.get_market_data = tool({
-                description: marketDataAction.description,
-                inputSchema: z.object({
-                    tokenAddress: z.string().describe("Token contract address (0x...)"),
-                }),
-                execute: async ({ tokenAddress }: { tokenAddress: string }) => {
-                    const result = await marketDataAction.execute!({ tokenAddress });
-                    return result.success ? result.data : { error: result.error };
-                },
-            });
-        }
-
-        const portfolioAction = readonlyActions.find(a => a.name === "get_portfolio");
-        if (portfolioAction) {
-            tools.get_portfolio = tool({
-                description: portfolioAction.description,
+        // Override map: actions that need runtime-injected params
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const TOOL_OVERRIDES: Record<string, (action: IAction) => any> = {
+            get_portfolio: (action) => tool({
+                description: action.description,
                 inputSchema: z.object({}),
                 execute: async () => {
-                    const result = await portfolioAction.execute!({
+                    const result = await action.execute!({
                         __vaultTokens: obs.vault,
                         __nativeBalance: obs.nativeBalance.toString(),
                     });
                     return result.success ? result.data : { error: result.error };
                 },
-            });
-        }
-
-        const allowanceAction = readonlyActions.find(a => a.name === "get_allowance");
-        if (allowanceAction) {
-            tools.get_allowance = tool({
-                description: allowanceAction.description,
+            }),
+            get_allowance: (action) => tool({
+                description: action.description,
                 inputSchema: z.object({
                     token: z.string().describe("ERC20 token contract address"),
                     spender: z.string().describe("Spender address (e.g. PancakeSwap router)"),
                 }),
                 execute: async ({ token, spender }: { token: string; spender: string }) => {
-                    const result = await allowanceAction.execute!({ token, owner: obs.vaultAddress, spender });
+                    const result = await action.execute!({ token, owner: obs.vaultAddress, spender });
                     return result.success ? result.data : { error: result.error };
                 },
-            });
-        }
-
-        const swapQuoteAction = readonlyActions.find(a => a.name === "get_swap_quote");
-        if (swapQuoteAction) {
-            tools.get_swap_quote = tool({
-                description: swapQuoteAction.description,
-                inputSchema: z.object({
-                    router: z.string().describe("DEX router address"),
-                    tokenIn: z.string().describe("Input token address (0x0...0 for BNB)"),
-                    tokenOut: z.string().describe("Output token address"),
-                    amountIn: z.string().describe("Amount in wei"),
-                }),
-                execute: async (params: Record<string, string>) => {
-                    const result = await swapQuoteAction.execute!(params);
-                    return result.success ? result.data : { error: result.error };
-                },
-            });
-        }
-
-        const tokenInfoAction = readonlyActions.find(a => a.name === "get_token_info");
-        if (tokenInfoAction) {
-            tools.get_token_info = tool({
-                description: tokenInfoAction.description,
-                inputSchema: z.object({
-                    tokenAddress: z.string().describe("ERC20 token contract address"),
-                }),
-                execute: async ({ tokenAddress }: { tokenAddress: string }) => {
-                    const result = await tokenInfoAction.execute!({ tokenAddress });
-                    return result.success ? result.data : { error: result.error };
-                },
-            });
-        }
-
-        const manageGoalAction = readonlyActions.find(a => a.name === "manage_goal");
-        if (manageGoalAction) {
-            tools.manage_goal = tool({
-                description: manageGoalAction.description,
+            }),
+            manage_goal: (action) => tool({
+                description: action.description,
                 inputSchema: z.object({
                     operation: z.enum(["create", "complete"]).describe("'create' or 'complete'"),
                     goalId: z.string().describe("Unique goal ID (snake_case)"),
                     description: z.string().optional().describe("Goal description (required for create)"),
                 }),
                 execute: async (params: { operation: string; goalId: string; description?: string }) => {
-                    const result = await manageGoalAction.execute!({
+                    const result = await action.execute!({
                         ...params,
                         __tokenId: context?.tokenId,
                     });
                     return result.success ? result.data : { error: result.error };
                 },
-            });
+            }),
+        };
+
+        for (const action of readonlyActions) {
+            // Use override if available, otherwise auto-register from IAction.parameters
+            if (TOOL_OVERRIDES[action.name]) {
+                tools[action.name] = TOOL_OVERRIDES[action.name](action);
+            } else {
+                tools[action.name] = tool({
+                    description: action.description,
+                    inputSchema: toolParamsToZod(action.parameters),
+                    execute: async (params: Record<string, unknown>) => {
+                        const result = await action.execute!(params);
+                        return result.success ? result.data : { error: result.error };
+                    },
+                });
+            }
         }
 
         return tools;
