@@ -67,21 +67,21 @@ async function fetchPrices(tokens: string[]): Promise<Map<string, number>> {
 
             // For each token, pick the BSC pair with highest liquidity
             const bscPairs = (raw.pairs ?? []).filter(p => p.chainId === "bsc");
-            const tokenBestPrice = new Map<string, number>();
+            const tokenBestPrice = new Map<string, { price: number; liquidity: number }>();
 
             for (const pair of bscPairs) {
                 const addr = pair.baseToken.address.toLowerCase();
                 const price = parseFloat(pair.priceUsd);
                 if (isNaN(price) || price <= 0) continue;
 
-                // Keep the pair with highest liquidity
+                const liq = pair.liquidity?.usd ?? 0;
                 const existing = tokenBestPrice.get(addr);
-                if (!existing || (pair.liquidity?.usd ?? 0) > 0) {
-                    tokenBestPrice.set(addr, price);
+                if (!existing || liq > existing.liquidity) {
+                    tokenBestPrice.set(addr, { price, liquidity: liq });
                 }
             }
 
-            for (const [addr, price] of tokenBestPrice) {
+            for (const [addr, { price }] of tokenBestPrice) {
                 prices.set(addr, price);
                 priceCache.set(addr, { priceUsd: price, fetchedAt: now });
             }

@@ -772,11 +772,32 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
                             [trigger.tokenId.toString(), triggerMsg],
                         );
 
-                        // Mark trigger as completed
-                        await completeTriggerGlobal(
-                            pool, trigger.tokenId, trigger.goalId,
-                            `Fired at price $${currentPrice.toFixed(6)}`,
-                        );
+                        if (trigger.condition.type === "time_interval") {
+                            // Recurring: update lastTriggeredAt instead of completing
+                            const updated = JSON.stringify({
+                                condition: trigger.condition,
+                                action: trigger.action,
+                                basePrice: trigger.basePrice,
+                                lastTriggeredAt: new Date().toISOString(),
+                            });
+                            await pool.query(
+                                `UPDATE agent_memory SET params = $3::jsonb
+                                 WHERE token_id = $1 AND type = 'trigger' AND action = $2 AND result IS NULL`,
+                                [trigger.tokenId.toString(), trigger.goalId, updated],
+                            );
+                        } else {
+                            // One-shot: complete trigger AND corresponding goal
+                            await completeTriggerGlobal(
+                                pool, trigger.tokenId, trigger.goalId,
+                                `Fired at price $${currentPrice.toFixed(6)}`,
+                            );
+                            // Also complete the regular goal so LLM doesn't see stale active goal
+                            await pool.query(
+                                `UPDATE agent_memory SET result = '{"success": true}'::jsonb
+                                 WHERE token_id = $1 AND type = 'goal' AND action = $2 AND result IS NULL`,
+                                [trigger.tokenId.toString(), trigger.goalId],
+                            );
+                        }
 
                         // Force immediate agent cycle
                         await store.updateNextCheckAt(trigger.tokenId, new Date());
