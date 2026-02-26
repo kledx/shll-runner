@@ -11,6 +11,8 @@ import type { RunnerStore } from "./store/index.js";
 import type { ChainServices } from "./chain.js";
 import type { ExecutionTraceEntry } from "./types.js";
 import type { ActionPayload } from "./actions/interface.js";
+import { evaluateTriggers } from "./triggers/evaluator.js";
+import { loadAllActiveTriggers, completeTriggerGlobal } from "./triggers/store.js";
 import { AgentManager } from "./agent/manager.js";
 import { getBlueprint } from "./agent/factory.js";
 import { runAgentCycle, recordExecution } from "./agent/runtime.js";
@@ -739,6 +741,52 @@ export async function startScheduler(ctx: SchedulerContext): Promise<void> {
 
             if (schedulableTokenIds.length === 0) {
                 log.info("[Tick] idle — no schedulable tokens");
+            }
+
+            // ── Phase 1: Programmatic Trigger Evaluation ──────────
+            // Runs WITHOUT calling LLM. Checks all active triggers
+            // against current prices. Fired triggers inject context
+            // into agent memory and force immediate agent cycle.
+            try {
+                const pool = store.getPool();
+                const activeTriggers = await loadAllActiveTriggers(pool);
+                if (activeTriggers.length > 0) {
+                    const fired = await evaluateTriggers(activeTriggers);
+                    for (const { trigger, currentPrice } of fired) {
+                        log.info(
+                            `[Trigger] FIRED: ${trigger.condition.type} on ${trigger.condition.token.slice(0, 10)}... ` +
+                            `price=$${currentPrice.toFixed(6)} threshold=$${trigger.condition.threshold?.toFixed(6) ?? "N/A"} ` +
+                            `token=${trigger.tokenId.toString()} goal=${trigger.goalId}`,
+                        );
+
+                        // Inject trigger context into agent memory so LLM sees it
+                        const triggerMsg =
+                            `⚡ TRIGGER FIRED: ${trigger.condition.type} condition met! ` +
+                            `Token ${trigger.condition.token} current price: $${currentPrice.toFixed(6)}. ` +
+                            `${trigger.action.message} ` +
+                            `Execute the action NOW.`;
+
+                        await pool.query(
+                            `INSERT INTO agent_memory (token_id, type, action, params, result, reasoning, timestamp)
+                             VALUES ($1, 'user_message', 'trigger_fired', NULL, NULL, $2, NOW())`,
+                            [trigger.tokenId.toString(), triggerMsg],
+                        );
+
+                        // Mark trigger as completed
+                        await completeTriggerGlobal(
+                            pool, trigger.tokenId, trigger.goalId,
+                            `Fired at price $${currentPrice.toFixed(6)}`,
+                        );
+
+                        // Force immediate agent cycle
+                        await store.updateNextCheckAt(trigger.tokenId, new Date());
+                    }
+                }
+            } catch (trigErr) {
+                log.error(
+                    "[Trigger] evaluation error:",
+                    trigErr instanceof Error ? trigErr.message : trigErr,
+                );
             }
 
             // Dispatch tokens in parallel, limited by semaphore

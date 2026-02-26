@@ -5,11 +5,13 @@
  * blocks, observations. Used by Brain for context-aware reasoning.
  */
 
+import type { TriggerGoal } from "../triggers/interface.js";
+
 // ═══════════════════════════════════════════════════════
 //                    Memory Entry Types
 // ═══════════════════════════════════════════════════════
 
-export type MemoryEntryType = "execution" | "decision" | "blocked" | "observation" | "goal" | "user_message" | "agent_reply";
+export type MemoryEntryType = "execution" | "decision" | "blocked" | "observation" | "goal" | "trigger" | "user_message" | "agent_reply";
 
 export interface MemoryEntry {
     /** Entry type */
@@ -52,6 +54,15 @@ export interface IMemory {
 
     /** Mark a goal as completed */
     completeGoal?(goalId: string): Promise<void>;
+
+    /** Store a structured trigger goal */
+    storeTrigger?(trigger: TriggerGoal): Promise<void>;
+
+    /** Get all active triggers for this agent */
+    getActiveTriggers?(): Promise<TriggerGoal[]>;
+
+    /** Complete a trigger (mark as fired) */
+    completeTrigger?(goalId: string, result: string): Promise<void>;
 }
 
 /** Structured goal entry for tracking agent objectives */

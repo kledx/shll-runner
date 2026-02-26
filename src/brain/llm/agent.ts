@@ -385,11 +385,14 @@ export class LLMBrain implements IBrain {
             "- DEFAULT: If unsure, set nextCheckMs=30000.",
             "",
             "## Proactive Behavior",
-            "When you have an active monitoring task (done=false), you should:",
-            "- PERSIST STATE: On receiving a monitoring/DCA/watch task, IMMEDIATELY call manage_goal to create a goal.",
-            "  Include ALL critical details in the description: token address, target price, amount, conditions.",
-            "  Example: manage_goal('monitor_xyz', 'Monitor 0xABC... (XYZ), buy $1 worth when price drops 1% from $0.063')",
-            "  This ensures you remember the task even after service restarts.",
+            "When you receive a monitoring/DCA/watch task, you should:",
+            "- USE TRIGGERS: Call manage_goal with operation='create_trigger' to set up programmatic price monitoring.",
+            "  The system will check the price every 3 seconds WITHOUT calling you. You will be woken ONLY when the condition is met.",
+            "  Example: manage_goal({operation:'create_trigger', goalId:'monitor_xyz', triggerType:'price_below',",
+            "    token:'0xABC...', threshold:0.06168, actionType:'swap', actionMessage:'Buy $1 of XYZ, price dropped to target'})",
+            "  Then set done=true — you do NOT need to keep polling. The trigger system handles it.",
+            "- When a trigger fires, you will see a '⚡ TRIGGER FIRED' message in your context. Execute the trade immediately.",
+            "- For non-price conditions (complex logic), use manage_goal with operation='create' and continue polling.",
             "- CHECK portfolio and market data each cycle to detect changes",
             "- ACT on opportunities: if price hit a target you previously noted, execute the trade",
             "- REPORT significant changes via 'message' even if you decide to wait",
@@ -448,12 +451,8 @@ export class LLMBrain implements IBrain {
             }),
             manage_goal: (action) => tool({
                 description: action.description,
-                inputSchema: z.object({
-                    operation: z.enum(["create", "complete"]).describe("'create' or 'complete'"),
-                    goalId: z.string().describe("Unique goal ID (snake_case)"),
-                    description: z.string().optional().describe("Goal description (required for create)"),
-                }),
-                execute: async (params: { operation: string; goalId: string; description?: string }) => {
+                inputSchema: toolParamsToZod(action.parameters),
+                execute: async (params: Record<string, unknown>) => {
                     const result = await action.execute!({
                         ...params,
                         __tokenId: context?.tokenId,
